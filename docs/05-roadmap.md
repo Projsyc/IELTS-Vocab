@@ -102,14 +102,19 @@ v3.0  多端（小程序/安卓）  ░░░░░░░░░░░░ 未开�
   - [x] 响应绝不含 `password_hash` / 微信字段（已写测试守护）
   - [x] camelCase 输出，与 `packages/shared` 的 TS 类型一致
   - [x] `scripts/manage_users.py` —— 邀请制手动开号（密码走 getpass，不进 shell 历史）
-- [ ] 词库接口（list / stats）
-- [ ] 练习接口（daily / session / answer）
-  - [x] 听写判定 + diff 生成（错误位置高亮）—— 已完成，见上
-  - [ ] **阅读干扰项生成** —— ⚠️ 必须同时按 `topic` + `part_of_speech` 过滤，
-        否则释义前缀泄露答案（见 [03-data-model §5](./03-data-model.md)）
-  - [ ] 降级链：同话题+同词性 → 同话题 → 同词性 → 全库随机
-  - [ ] 答题落库：追加 `answer_events` + 增量更新 `user_progress`
-- [ ] 进度接口（summary / wrong-words / rebuild）
+- [x] 词库接口（list / stats）—— `routers/words.py`
+  - [x] 两种模式分别统计（听写/阅读进度独立）
+- [x] 练习接口（daily / session / answer）—— `routers/practice.py`，29 个 HTTP 测试
+  - [x] 听写判定 + diff 生成（错误位置高亮）
+  - [x] **阅读干扰项生成** —— `services/distractor.py`，36 个测试
+    - [x] 降级链：同话题+同词性 → 同话题 → 同词性 → 全库随机
+    - [x] ⭐ **一律剥掉词性前缀**，即便降级到混词性也不泄露答案
+    - [x] 释义文本去重（避免出现两个相同选项）
+    - [x] 真实 4,768 词实测：**99% 走最优路径**，0 次凑不够选项
+  - [x] 答题落库：追加 `answer_events` + 更新 `user_progress`
+    - [x] ⭐ **离线补传的更早事件自动触发全量回放**（增量在乱序时会算错）
+  - [x] ⚠️ 阅读模式回传**选中文本**而非 index（题目无状态生成，index 无从验证）
+- [ ] 进度接口（summary / wrong-words / rebuild）← **M2 只剩这个**
 
 ### M3 前端
 

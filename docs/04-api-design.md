@@ -202,55 +202,73 @@ Query 参数：
 ```jsonc
 // 请求（听写模式）
 {
-  "word_id": "uuid",
+  "wordId": "uuid",
   "mode": "dictation",
-  "user_input": "accomodate",
-  "answered_at": "2026-07-25T10:30:00+08:00",   // ⭐ 客户端时间
-  "device_id": "web-chrome-a1b2c3"
+  "userInput": "accomodate",
+  "answeredAt": "2026-07-25T10:30:00+08:00",   // ⭐ 客户端时间，必须带时区
+  "deviceId": "web-chrome-a1b2c3"
 }
 
 // 请求（阅读模式）
 {
-  "word_id": "uuid",
+  "wordId": "uuid",
   "mode": "recognition",
-  "user_input": "3",              // 选了第几项；"unknown" 表示点了"不知道"
-  "answered_at": "2026-07-25T10:30:05+08:00",
-  "device_id": "web-chrome-a1b2c3"
+  "userInput": "容纳; 提供住宿",        // ⭐ 选中选项的**文本**，不是 index
+  "answeredAt": "2026-07-25T10:30:05+08:00",
+  "deviceId": "web-chrome-a1b2c3"
 }
 ```
+
+> ⚠️ **阅读模式回传文本而非选项 index**（实现时修正了初稿设计）
+>
+> 题目是**无状态生成**的 —— 每次请求现算，服务端不保存"第几个是对的"。
+> 如果客户端回传 index，服务端无从验证；除非把题目存进 session 或用种子
+> 重新生成，两者都更复杂更脆弱。
+>
+> 回传文本则完全无状态：客户端本来就有全部 4 个选项文本，
+> 但**不知道哪个对**，照样不能作弊。
+>
+> 额外好处：事件日志里存文本比存 index 更有分析价值 ——
+> index 脱离当次题目毫无意义，文本能直接看出用户选了什么。
 
 ```jsonc
 // 响应 200（听写模式，答错）
 {
-  "is_correct": false,
-  "correct_answer": "accommodate",
-  "diff": [                        // 错误位置高亮用
-    { "pos": 0, "char": "a", "status": "ok" },
-    { "pos": 1, "char": "c", "status": "ok" },
-    { "pos": 2, "char": "c", "status": "ok" },
-    { "pos": 3, "char": "o", "status": "ok" },
-    { "pos": 4, "char": "m", "status": "ok" },
+  "isCorrect": false,
+  "correctAnswer": "accommodate",
+  "diff": [                        // 错误位置高亮用，Levenshtein 对齐
+    { "pos": 0, "char": "a", "status": "ok",      "expected": null },
+    { "pos": 4, "char": "m", "status": "ok",      "expected": null },
     { "pos": 5, "char": "",  "status": "missing", "expected": "m" },
-    { "pos": 6, "char": "o", "status": "ok" }
+    { "pos": 6, "char": "o", "status": "ok",      "expected": null }
     // ...
   ],
-  "progress": {                    // 更新后的 Leitner 状态
+  "progress": {
     "box": 1,                      // 答错，掉回 Box 1
-    "next_review_at": "2026-07-26T10:30:00+08:00"
-  }
+    "nextReviewAt": "2026-07-26T10:30:00+08:00",
+    "correctCount": 0,
+    "wrongCount": 1
+  },
+  "wasReplayed": false             // 是否触发了全量回放（见下）
 }
 ```
+
+`status` 取值：`ok` / `wrong`（拼错） / `missing`（漏字母） / `extra`（多字母）。
 
 **服务端处理流程**：
 
 ```
 1. 判定对错
-   - 听写：strip() + lower() 后严格比对
-   - 阅读：比对选项 index（"unknown" 恒判错）
-2. 追加一条 answer_events  ← 不可变
-3. 增量更新 user_progress  ← 缓存
-4. 返回结果 + diff + 新进度
+   听写：strip + 忽略大小写后严格比对
+   阅读：比对选中文本与正确释义；"unknown" 恒判错
+2. 追加一条 answer_events           ← 不可变，事实来源
+3. 更新 user_progress               ← 缓存
+   ├─ 新事件不早于已记录的 last_answered_at → 增量更新（快）
+   └─ 新事件更早（离线补传）           → **全量回放**，并置 wasReplayed=true
 ```
+
+> ⭐ 第 3 步的分支是正确性关键。增量更新只在"新事件确实最新"时等价于全量，
+> 离线补传的更早事件必须走全量回放 —— 已有单测固化这个局限。
 
 ---
 
@@ -335,20 +353,23 @@ Query：mode, limit, offset
 
 ## 6. 接口清单速查
 
-| 方法 | 路径 | 说明 | MVP |
+| 方法 | 路径 | 说明 | 状态 |
 |------|------|------|-----|
-| POST | `/api/auth/login` | 登录 | ✅ |
-| GET | `/api/auth/me` | 当前用户 | ✅ |
-| GET | `/api/word-lists` | 词库列表 | ✅ |
-| GET | `/api/word-lists/{id}/stats` | 词库掌握情况 | ✅ |
-| GET | `/api/practice/daily` | 每日任务 | ✅ |
-| POST | `/api/practice/session` | 自由练习 | ✅ |
-| POST | `/api/practice/answer` | 提交答题 | ✅ |
+| POST | `/api/auth/login` | 登录 | ✅ 已实现 |
+| GET | `/api/auth/me` | 当前用户 | ✅ 已实现 |
+| GET | `/api/word-lists` | 词库列表 | ✅ 已实现 |
+| GET | `/api/word-lists/{id}/stats` | 词库掌握情况 | ✅ 已实现 |
+| GET | `/api/practice/daily` | 每日任务 | ✅ 已实现 |
+| POST | `/api/practice/session` | 自由练习 | ✅ 已实现 |
+| POST | `/api/practice/answer` | 提交答题 | ✅ 已实现 |
 | POST | `/api/practice/answers/batch` | 批量提交（离线） | v2 |
-| GET | `/api/progress/summary` | 学习总览 | ✅ |
-| GET | `/api/progress/wrong-words` | 错题本 | ✅ |
-| POST | `/api/progress/rebuild` | 重算进度 | ✅ |
+| GET | `/api/progress/summary` | 学习总览 | 🔜 待实现 |
+| GET | `/api/progress/wrong-words` | 错题本 | 🔜 待实现 |
+| POST | `/api/progress/rebuild` | 重算进度 | 🔜 待实现 |
 | GET | `/api/health` | 健康检查 | ✅ 已实现 |
+
+> 字段命名：请求与响应统一用 **camelCase**（与 `packages/shared` 的 TS 类型一致），
+> 后端内部用 snake_case，由 Pydantic 的 `alias_generator` 自动转换。
 
 ---
 

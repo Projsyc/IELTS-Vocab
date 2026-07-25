@@ -149,8 +149,9 @@ backend/.venv/bin/pip install -r backend/requirements.txt   # 后端依赖
 | 词性 | **99.6%**（从释义前缀解析） |
 | 话题 | **100%**（LLM 打标，21 类，已人工验收） |
 | 数据库 | 5 表 + 7 索引，迁移往返已验证 |
-| 算法 | Leitner + 事件回放（纯函数，68 个测试） |
-| 测试 | **237 个**（含 doctest） |
+| 算法 | Leitner + 回放 + 听写判定 + 干扰项生成（全纯函数） |
+| 接口 | 认证 / 词库 / 练习，共 8 个 |
+| 测试 | **409 个**（含 doctest） |
 
 ### 词库方案（已定案）
 
@@ -176,17 +177,21 @@ backend/.venv/bin/pip install -r backend/requirements.txt   # 后端依赖
 | `services/leitner.py` | Leitner 状态机，全纯函数 | 45 |
 | `services/replay.py` | 事件回放（乱序一致、增量==全量） | 23 |
 | `services/dictation.py` | 听写判定 + Levenshtein 错误高亮 | 50 |
+| `services/distractor.py` | 干扰项生成（降级链 + 防前缀泄露） | 36 |
+| `services/practice.py` | 挑词、出题、答题落库 | — |
 | `core/security.py` | bcrypt 哈希 + JWT | 30 |
 | `routers/auth.py` | login / me | 23 |
+| `routers/words.py` + `practice.py` | 词库、每日任务、自由练习、答题 | 29 |
 | `scripts/manage_users.py` | 邀请制手动开号 | — |
 
-**剩余**：
+**M2 只剩**：进度接口（summary / wrong-words / rebuild）
 
-1. 词库接口（list / stats）
-2. 练习接口（daily / session / answer）—— 干扰项生成是重点
-3. 进度接口（summary / wrong-words / rebuild）
+## ⭐ 实现中修正的两处设计
 
-详见 [docs/05-roadmap.md](./docs/05-roadmap.md)。
+1. **阅读模式回传选中文本，不是选项 index** —— 题目是无状态生成的，
+   服务端不保存"第几个对"，回传 index 无从验证。文本方案完全无状态且不泄露。
+2. **干扰项一律剥掉词性前缀** —— 释义自带 `n.` / `vt.` 前缀，
+   降级到混词性时用户数前缀就能排除答案。
 
 ## ⚠️ async engine 与事件循环（这个坑踩了三次）
 

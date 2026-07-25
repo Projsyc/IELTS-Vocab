@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
-from app.routers import auth
+from app.routers import auth, practice, words
 
 app = FastAPI(
     title="IELTS Vocabulary API",
@@ -32,6 +32,8 @@ app.mount("/static/audio", StaticFiles(directory=_audio_dir), name="audio")
 
 
 app.include_router(auth.router)
+app.include_router(words.router)
+app.include_router(practice.router)
 
 
 @app.get("/api/health", tags=["运维"])
