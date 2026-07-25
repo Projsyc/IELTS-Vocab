@@ -69,17 +69,27 @@ CREATE TABLE users (
 CREATE TABLE words (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     word            VARCHAR(100) NOT NULL,          -- 英文词形
-    meaning         TEXT         NOT NULL,          -- 中文释义
-    phonetic        VARCHAR(100),                   -- 音标 /əˈkɒmədeɪt/
-    part_of_speech  VARCHAR(20),                    -- n. / v. / adj. ...
+
+    -- 释义：双字段（一词多义占 75.1%，见 ADR-008）
+    meaning         TEXT         NOT NULL,          -- 完整释义，多义项用 " / " 分隔
+    meaning_primary TEXT         NOT NULL,          -- 第一义项，阅读模式选项用
+
+    phonetic        VARCHAR(100),                   -- IPA 音标 /əˈkɒmədeɪt/
+    part_of_speech  VARCHAR(20),                    -- n. / v. / adj. ...（从释义前缀解析）
 
     -- 阅读模式干扰项的关键字段
     topic           VARCHAR(50),                    -- 雅思话题：教育/环境/科技...
 
-    -- 音频
-    audio_url       VARCHAR(500),                   -- 预生成音频路径，NULL 则前端降级 TTS
+    -- 音频（seed 阶段全部本地化，100% 有值）
+    audio_url       VARCHAR(500),                   -- 本地音频路径
+    audio_source    VARCHAR(20),                    -- 'dictapi' | 'edge-tts'，便于排查
 
-    difficulty      SMALLINT NOT NULL DEFAULT 2,    -- 1易 2中 3难
+    -- 来自 ECDICT 的元数据
+    exam_tags       VARCHAR(100),                   -- "cet6 toefl ielts gre"，空格分隔
+    bnc             INT,                            -- BNC 语料词频排名
+    frq             INT,                            -- 当代语料词频排名
+
+    difficulty      SMALLINT NOT NULL DEFAULT 2,    -- 1易 2中 3难（从 exam_tags 推导）
     word_list_id    UUID REFERENCES word_lists(id) ON DELETE CASCADE,
 
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -89,15 +99,24 @@ CREATE TABLE words (
 
 CREATE INDEX idx_words_topic   ON words(topic);          -- 干扰项按话题抽
 CREATE INDEX idx_words_list    ON words(word_list_id);
+CREATE INDEX idx_words_frq     ON words(frq);            -- 按词频选词/分级
 ```
 
 **关键字段说明**：
 
 | 字段 | 为什么存在 |
 |------|-----------|
-| `topic` | **阅读模式的命根子**。干扰项从同 topic 内抽，否则 4 选 1 毫无难度。由 LLM 批量打标 |
-| `audio_url` | `NULL` 表示没有预生成音频 → 前端降级用浏览器 `SpeechSynthesis` |
+| `meaning` / `meaning_primary` | 75.1% 是多义词。完整释义中位数 27 字、最长 169 字，塞进 4 选 1 太挤且**长度差异会泄露答案**；首义中位数仅 14 字。选项用 `meaning_primary`，答题后展示 `meaning`。见 [ADR-008](./08-decisions.md) |
+| `topic` | **阅读模式的命根子**。干扰项从同 topic 内抽，否则 4 选 1 毫无难度。无现成数据源，由 LLM 批量打标 |
+| `audio_url` | seed 阶段全部下载到本地，播放零延迟。热链实测中位延迟 760ms，不可接受 |
+| `audio_source` | 标记音频来自真人发音还是 TTS，便于日后替换或排查 |
+| `exam_tags` | 允许应用层筛选（如"跳过四级词"），且是 `difficulty` 的推导依据 |
+| `bnc` / `frq` | 词频，用于难度分级和"先学高频词"的排序 |
 | `part_of_speech` | 备选的干扰项分组维度（topic 缺失时的兜底） |
+
+> **数据来源与实测覆盖率见 [09 词库数据源调研](./09-wordlist-research.md)。**
+> 词表来自 [ECDICT](https://github.com/skywind3000/ECDICT)（MIT）`tag` 含 `ielts` 的 5,040 词。
+
 
 ---
 
@@ -267,8 +286,8 @@ LIMIT :new_limit;
 ## 5. 干扰项查询（阅读模式）
 
 ```sql
--- 从同话题内抽 3 个其他词的释义
-SELECT meaning FROM words
+-- 从同话题内抽 3 个其他词的首义（不是完整释义 —— 长度要均匀，否则泄露答案）
+SELECT meaning_primary FROM words
 WHERE topic = :topic
   AND id <> :current_word_id
   AND word_list_id = :list_id
@@ -282,9 +301,10 @@ LIMIT 3;
 
 ## 6. 待确认 / 未决
 
-- [ ] `words.meaning` 是否需要支持一词多义（多条释义）？目前设计为单条 TEXT
-- [ ] 音频文件存哪：本地文件系统 / 对象存储？MVP 先本地
+- [x] ~~`words.meaning` 是否需要支持一词多义？~~ → 已解决：`meaning` + `meaning_primary` 双字段（[ADR-008](./08-decisions.md)）
+- [ ] 音频文件存哪：本地文件系统 / 对象存储？MVP 先本地（`backend/static/audio/`，不进 git）
 - [ ] `answer_events` 长期增长的归档策略（一个用户一年约几万条，暂不是问题）
+- [ ] `difficulty` 从 `exam_tags` 推导的具体规则待定（初步：含 zk/gk/cet4 → 1；含 cet6/ky/toefl → 2；仅 ielts/gre → 3）
 
 ---
 

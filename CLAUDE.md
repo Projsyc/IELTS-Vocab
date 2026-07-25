@@ -72,9 +72,24 @@ backend/.venv/bin/python -c "import main"                   # 验证后端能加
 ## 当前状态
 
 **v0.1 已完成**：骨架搭建 + 需求确定 + 文档
-**下一步（M1）**：词库数据源调研 → 4000 词导入 → LLM 打话题标签 → TTS 生成音频
+**M1 调研已完成**：词库数据源定案，最大风险解除（见 [docs/09](./docs/09-wordlist-research.md)）
 
-⚠️ **M1 的第一件事必须是词库数据源调研** —— 这是最大的未验证风险，卡住要尽早暴露。
+### 词库方案（已定案）
+
+| 内容 | 来源 | 覆盖 |
+|------|------|------|
+| 词表 + 释义 | [ECDICT](https://github.com/skywind3000/ECDICT) `tag` 含 `ielts`（**MIT**） | 5,040 词，全导入 |
+| 词性 | 从 `translation` 前缀解析 | 99.5% |
+| 音标 | dictionaryapi.dev 真 IPA + 清洗版 ECDICT 兜底 | 96% + 4% |
+| 音频 | dictionaryapi.dev 真人 + edge-tts 补齐，**全部下载本地** | 76% + 24% |
+| 话题标签 | LLM 批量打标（无现成数据源） | 自建 |
+
+⚠️ **ECDICT 音标不是标准 IPA**（简化记音 + 混入西里尔 `ә`），规则转换不可行 —— 已实测 0/8 一致。所以音标改从 API 取。
+
+**下一步（M1 剩余）**：
+1. PostgreSQL + Alembic 建表
+2. `scripts/seed_words.py` —— **必须可断点续跑**（调 API 约 75 分钟）
+3. `scripts/tag_topics.py` —— LLM 打标 + 抽样校验
 
 ## 开发约定
 
@@ -160,6 +175,7 @@ https://github.com/Projsyc/IELTS-Vocab
 
 | 风险 | 应对 |
 |------|------|
-| 版权：《刘洪波雅思词汇真经》 | **只用选词范围**，释义走开源词典（ECDICT）。不复制书中释义/例句/编排 |
-| LLM 话题标签质量 | M1 抽样人工校验 |
-| 词库数据源找不到 | M1 优先验证 |
+| ~~版权：《刘洪波雅思词汇真经》~~ | ✅ **已解除** —— 改用 ECDICT（MIT）自带 `ielts` 标签 |
+| LLM 话题标签质量 | 打标后抽样人工校验 |
+| 音频许可（dictionaryapi.dev / edge-tts） | 本地自用可接受；**v2 部署前必须复核**，退路是浏览器 TTS |
+| seed 75 分钟流程中断 | 脚本必须断点续跑 + 失败重试 + 限速 |
