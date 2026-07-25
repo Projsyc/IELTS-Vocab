@@ -50,13 +50,25 @@ export interface LoginResponse {
 export interface Word {
   id: string
   word: string
+  /** 完整释义，多义项用 " / " 分隔。答题后展示 */
   meaning: string
+  /** 第一义项。阅读模式 4 选 1 用 —— 长度均匀，不会因长短泄露答案 */
+  meaningPrimary: string
+  /** IPA 音标，如 /əˈkɒmədeɪt/ */
   phonetic: string | null
   partOfSpeech: string | null
   /** 雅思话题分类 —— 阅读模式干扰项按此抽取 */
   topic: string | null
-  /** 预生成音频路径。null 表示前端需降级用浏览器 TTS */
+  /** 本地音频路径。seed 阶段全部本地化，正常情况下 100% 有值 */
   audioUrl: string | null
+  /** 音频来源，便于排查与日后替换 */
+  audioSource: 'dictapi' | 'edge-tts' | null
+  /** ECDICT 考试标签，空格分隔，如 "cet6 toefl ielts gre" */
+  examTags: string | null
+  /** BNC 语料词频排名 */
+  bnc: number | null
+  /** 当代语料词频排名 */
+  frq: number | null
   difficulty: 1 | 2 | 3
 }
 

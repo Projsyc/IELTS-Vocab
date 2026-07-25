@@ -22,6 +22,57 @@
 
 ---
 
+## 2026-07-25 (2) M1 词库数据源调研完成 —— 最大风险解除
+
+**做了什么**
+
+- 完成 [09 词库数据源调研](./09-wordlist-research.md)，所有结论均为**实测**而非查文档
+- **关键发现**：[ECDICT](https://github.com/skywind3000/ECDICT)（MIT，77 万词条）的 `tag` 字段自带考试大纲标注，`ielts` 标签覆盖 **5,040 词**
+  → 直接替代刘洪波词表，**版权风险归零**
+- 实测 ielts 子集字段完整度：释义 100%、音标 95.1%、词频 100%、词性字段全空但 99.5% 可从释义前缀解析、音频/话题字段不存在
+- 实测 dictionaryapi.dev：词条 96%、音频 70–76%、IPA 96%、中位延迟 **760ms**
+- 实测 edge-tts 可用（英音/美音合成正常）
+- 通过 `grilling` skill 逐个确认 5 项决策，写成 [ADR-007~009](./08-decisions.md)
+
+**遇到的问题**
+
+- ⚠️ **原定"把 ECDICT 音标规范化成标准 IPA"经实测不可行** —— 规则转换后 0/8 与标准 IPA 一致。
+  ECDICT 用简化记音体系（`i` vs `ɪ`、`ei` vs `eɪ`、`әu` vs `əʊ`），单个 `i` 无法从字符判断该转成什么。
+  已向用户报告并改路线：音标改从 dictionaryapi.dev 取（96% 覆盖，真 IPA），零额外成本。
+- 发现 ECDICT 音标混入西里尔字母 `ә`(U+04D9) 3,201 次、`є`(U+0454) 57 次，影响 49.4% 词条
+- 破译了 ECDICT 记音里 `.` 的含义 —— 对照 `abbreviation` 的标准 IPA 确认是**次重音标记** ˌ
+
+**关键决策**（详见 [08-decisions.md](./08-decisions.md)）
+
+| # | 决策 | 结论 |
+|---|------|------|
+| 1 | 刘洪波词表 | 先不用，ECDICT 跑通再说 |
+| 2 | 选词策略 | 5,040 词**全部导入** + 存 `exam_tags`，筛选交给应用层 |
+| 3 | 一词多义（75.1%） | `meaning` 存完整 + `meaning_primary` 存首义 |
+| 4 | 音频 | dictionaryapi.dev 76% + edge-tts 24%，**全部下载本地** |
+| 5 | 音标 | 改从 dictionaryapi.dev 取 IPA 96% + 清洗版 ECDICT 兜底 4% |
+
+**数据模型变更**（`words` 表新增 5 列）
+
+```
++ meaning_primary  TEXT     首义，阅读模式选项用
++ audio_source     VARCHAR  'dictapi' | 'edge-tts'
++ exam_tags        VARCHAR  "cet6 toefl ielts gre"
++ bnc, frq         INT      词频
+```
+
+**下次从哪继续**
+
+→ **M1 剩余部分**（调研已完成，剩下是工程实现）：
+
+1. PostgreSQL 本地环境 + Alembic 初始化 + 建表
+2. `scripts/seed_words.py` —— **必须支持断点续跑**（第 4 步约 75 分钟，中断了不能从头来）
+3. `scripts/tag_topics.py` —— LLM 打话题标签 + 抽样人工校验
+
+⚠️ 音频约 100MB，记得加 `.gitignore`。
+
+---
+
 ## 2026-07-25 项目初始化 + 需求确定
 
 **做了什么**

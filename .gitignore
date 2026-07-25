@@ -40,6 +40,10 @@ coverage/
 .tmp
 .cache
 
+# 词库音频（seed 生成，约 100MB，不进 git）
+backend/static/audio/
+*.mp3
+
 # Python (if backend uses Python)
 __pycache__/
 *.py[cod]
