@@ -9,3 +9,10 @@ venv/
 dist/
 .pytest_cache/
 .ruff_cache/
+
+# 词库源数据
+#   ecdict-ielts.csv（1.5MB 雅思子集）**要提交** —— 保证 fresh clone 离线可复现
+#   ecdict.csv（66MB 完整版）不提交 —— 只是构建缓存，99.3% 是我们不用的非雅思词
+data/ecdict.csv
+data/*.csv.part
+data/*.verify.csv

@@ -39,15 +39,18 @@ IELTS-Vocab/
 │   ├── .venv/          #   用 /opt/homebrew/bin/python3.13 建的
 │   ├── .env            #   本地配置（不进 git，从 .env.example 复制）
 │   ├── alembic/        #   数据库迁移
+│   ├── data/           #   ⭐ 词库原始数据（见该目录 README）
+│   │   ├── ecdict-ielts.csv  #     1.5MB 雅思子集，**进 git**，5,040 行
+│   │   └── ecdict.csv        #     66MB 完整版，不进 git（构建缓存）
 │   ├── app/
 │   │   ├── core/       #     config.py（配置）/ database.py（连接与 Session）
 │   │   ├── models/     #     SQLAlchemy ORM（5 张表）
 │   │   ├── schemas/    #     Pydantic 请求/响应模型（待写）
 │   │   ├── routers/    #     API 路由（待写）
 │   │   ├── services/   #     业务逻辑（待写）
-│   │   └── scripts/    #     seed / 打标脚本（待写）
-│   ├── static/audio/   #   词库音频（seed 生成，不进 git）
-│   └── tests/          #   test_schema.py：锁住结构性不变式
+│   │   └── scripts/    #     ecdict.py（纯函数）/ seed_words.py / export_ielts_subset.py
+│   ├── static/audio/   #   词库音频（seed 生成，~100MB，不进 git）
+│   └── tests/          #   test_schema.py + test_ecdict.py（91 个测试）
 ├── packages/shared/    # 前后端共享 TS 类型（@ielts/shared）
 ├── docs/               # 项目文档（9 篇）
 └── learning-docs/      # 概念扫盲笔记（写给初学者）
@@ -69,6 +72,22 @@ answer_events（只追加，事实来源）  ──回放──>  user_progress�
 
 **进度主键是三元组 `(user_id, word_id, mode)`** —— 听写和阅读进度独立，因为"认得出"和"会拼写"是两种能力。
 
+## 从零重建（fresh clone）
+
+```bash
+pnpm install
+cp backend/.env.example backend/.env
+backend/.venv/bin/pip install -r backend/requirements.txt   # 若 .venv 不存在见下
+pnpm db:up          # 起 PostgreSQL 容器
+pnpm db:migrate     # 建表
+pnpm seed           # 导入词库（读仓库内的 1.5MB 子集，离线可跑）
+```
+
+venv 不存在时：`/opt/homebrew/bin/python3.13 -m venv backend/.venv`
+
+**数据库和音频都是产物，不是真相来源** —— 源数据在 `backend/data/ecdict-ielts.csv`（进 git），
+其余都能由脚本重建。详见 [`backend/data/README.md`](./backend/data/README.md)。
+
 ## 常用命令
 
 ```bash
@@ -82,6 +101,11 @@ pnpm db:down                # 停容器（保留数据）
 pnpm db:reset               # ⚠️ 删数据卷重建
 pnpm db:migrate             # alembic upgrade head
 pnpm db:shell               # 进 psql
+
+# —— 词库 ——
+pnpm seed                   # 导入词库（可断点续跑，中断了重跑即可）
+pnpm seed:status            # 只看进度，不改数据
+# 试跑：cd backend && .venv/bin/python -m app.scripts.seed_words --limit 20
 
 pnpm test:backend           # 后端测试（需数据库在跑）
 pnpm build / pnpm lint      # 构建 / lint 全部
@@ -115,18 +139,22 @@ backend/.venv/bin/pip install -r backend/requirements.txt   # 后端依赖
 
 | 内容 | 来源 | 覆盖 |
 |------|------|------|
-| 词表 + 释义 | [ECDICT](https://github.com/skywind3000/ECDICT) `tag` 含 `ielts`（**MIT**） | 5,040 词，全导入 |
+| 词表 | [ECDICT](https://github.com/skywind3000/ECDICT) `tag` 含 `ielts`（**MIT**） | 5,040 → 剔冗余屈折形式 → **4,768 词** |
+| 释义 | ECDICT `translation`，拆成完整 + 首义双字段 | 100% |
 | 词性 | 从 `translation` 前缀解析 | 99.5% |
-| 音标 | dictionaryapi.dev 真 IPA + 清洗版 ECDICT 兜底 | 96% + 4% |
-| 音频 | dictionaryapi.dev 真人 + edge-tts 补齐，**全部下载本地** | 76% + 24% |
-| 话题标签 | LLM 批量打标（无现成数据源） | 自建 |
+| 音标 | dictionaryapi.dev 真 IPA + 清洗版 ECDICT 兜底 | ~96% |
+| 音频 | dictionaryapi.dev 真人 + edge-tts 补齐，**全部下载本地** | ~100% |
+| 话题标签 | LLM 批量打标（无现成数据源） | 待做 |
 
-⚠️ **ECDICT 音标不是标准 IPA**（简化记音 + 混入西里尔 `ә`），规则转换不可行 —— 已实测 0/8 一致。所以音标改从 API 取。
+⚠️ **两个已踩的坑，改音标相关代码前必读**：
+
+1. **ECDICT 音标不是标准 IPA**（简化记音 + 混入西里尔 `ә`），规则转换不可行 —— 已实测 0/8 一致。所以音标优先从 API 取。
+2. **`.` 在两个数据源里含义完全不同** —— ECDICT 里是**次重音**（→ `ˌ`），API 的 IPA 里是**音节分隔**（→ 删掉）。别把 `clean_ecdict_phonetic` 和 `normalize_api_phonetic` "统一"了，已有测试钉住这条差异。
 
 **下一步（M1 剩余）**：
-1. ~~PostgreSQL + Alembic 建表~~ ✅ 已完成（5 表 + 7 索引，迁移往返已验证）
-2. `scripts/seed_words.py` —— **必须可断点续跑**（调 API 约 75 分钟）
-3. `scripts/tag_topics.py` —— LLM 打标 + 抽样校验
+1. ~~PostgreSQL + Alembic 建表~~ ✅ 5 表 + 7 索引，迁移往返已验证
+2. ~~`scripts/seed_words.py`~~ ✅ 三阶段，断点续跑已实测
+3. `scripts/tag_topics.py` —— LLM 打话题标签 + 抽样校验 ← **就剩这个**
 
 ## 开发约定
 
