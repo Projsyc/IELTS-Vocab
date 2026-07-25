@@ -1,0 +1,18 @@
+{
+  "name": "ielts-vocab",
+  "version": "0.1.0",
+  "private": true,
+  "description": "雅思单词听写应用 - Monorepo",
+  "scripts": {
+    "dev": "pnpm -r --parallel run dev",
+    "dev:frontend": "pnpm -F @ielts/frontend dev",
+    "dev:backend": "cd backend && uvicorn main:app --reload",
+    "build": "pnpm -r run build",
+    "lint": "pnpm -r run lint",
+    "clean": "pnpm -r run clean"
+  },
+  "engines": {
+    "node": ">=18",
+    "pnpm": ">=8"
+  }
+}
