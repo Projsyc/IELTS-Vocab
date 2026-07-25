@@ -141,12 +141,13 @@ chore:    杂活（依赖、配置）
 
 ### 遇到问题或需要规划时
 
-**主动调用 `grill-me` 追问用户**，不要自己猜需求。
+**主动调用 `grilling` skill 追问用户**，不要自己猜需求。
 
-> ⚠️ **当前限制**：`grill-me` skill 设了 `disable-model-invocation: true`，
-> AI **无法自动调用**，只能由用户手动输入 `/grill-me`。
-> 若希望 AI 自动触发，需删除该 skill 的这行 frontmatter。
-> 在此之前，AI 应按 grill-me 的方式（连续追问、不接受含糊回答）手动执行访谈。
+- `grilling` — ✅ AI 可自动调用。方法论：**一次只问一个问题**，等回答后再问下一个；
+  能从环境查到的*事实*自己查，只把*决策*交给用户；未达成共识前不要动手实现
+- `grill-me` — 用户手动触发器（`/grill-me`），AI 无法调用，内部就是启动 grilling
+
+> 来源：[mattpocock/skills](https://github.com/mattpocock/skills)，已装 productivity + engineering 共 22 个到 `~/.claude/skills/`
 
 ### 远程仓库
 
