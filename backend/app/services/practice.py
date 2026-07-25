@@ -61,8 +61,11 @@ class AnswerOutcome:
     is_correct: bool
     correct_answer: str
     dictation: DictationResult | None      # 仅听写模式
-    progress: ProgressSnapshot
+    #: 更新后的进度。**测试模式为 None** —— 测试不影响进度（ADR-013）
+    progress: ProgressSnapshot | None
     was_replayed: bool                     # True 表示走了全量回放而非增量
+    #: 刚写入的事件 id。前端要用它来"判我对"
+    event_id: int
 
 
 # ─────────────────────────────────────────────────────────────
@@ -302,6 +305,7 @@ async def submit_answer(
     user_input: str,
     answered_at: datetime,
     device_id: str | None,
+    test_session_id: uuid.UUID | None = None,
 ) -> AnswerOutcome:
     """提交一次答题 —— 事件溯源的写路径。
 
@@ -309,10 +313,16 @@ async def submit_answer(
         1. 追加一条 `answer_events`  ← 不可变，事实来源
         2. 更新 `user_progress`      ← 缓存
 
+    ⚠️ **测试模式（`test_session_id` 非空）只做第 1 步。**
+       测试"错了就是错了"，不进 Leitner 循环（ADR-013）。
+       事件仍然记录 —— 要出成绩、要进错题本 —— 只是回放时会跳过。
+
     ⚠️ 第 2 步优先走**增量**（快）；但如果这条事件比已记录的
        `last_answered_at` 更早（离线补传），增量不等价于全量，
        必须回退到**全量回放**。这个判断是正确性的关键。
     """
+    is_test = test_session_id is not None
+
     # ── 判定 ──
     dictation_result = None
     if mode is PracticeMode.DICTATION:
@@ -330,9 +340,23 @@ async def submit_answer(
         user_input=user_input,
         answered_at=answered_at,
         device_id=device_id,
+        is_test=is_test,
+        test_session_id=test_session_id,
     )
     db.add(event)
     await db.flush()          # 拿到自增 id，回放排序要用
+
+    # ── 测试模式到此为止：不碰进度 ──
+    if is_test:
+        await db.commit()
+        return AnswerOutcome(
+            is_correct=is_correct,
+            correct_answer=word.word if mode is PracticeMode.DICTATION else word.meaning_primary,
+            dictation=dictation_result,
+            progress=None,
+            was_replayed=False,
+            event_id=event.id,
+        )
 
     # ── 2. 更新进度缓存 ──
     progress = (
@@ -392,6 +416,7 @@ async def submit_answer(
         dictation=dictation_result,
         progress=snapshot,
         was_replayed=was_replayed,
+        event_id=event.id,
     )
 
 
@@ -404,14 +429,29 @@ async def rebuild_progress(
     """从事件全量重建某个 (用户, 单词, 模式) 的进度。
 
     这是 ADR-002 那句"任何一行都能从事件重算出来"的具体兑现。
+
+    ⚠️ **必须把 is_test / corrects_event_id 一起查出来**，否则 replay()
+       无法跳过测试事件、无法应用更正 —— 会把更正事件当成又一次答对，
+       把测试答错当成真实答错。（这个坑踩过，见 BUG-010）
     """
     rows = (
         await db.execute(
-            select(AnswerEvent.id, AnswerEvent.is_correct, AnswerEvent.answered_at).where(
+            select(
+                AnswerEvent.id,
+                AnswerEvent.is_correct,
+                AnswerEvent.answered_at,
+                AnswerEvent.is_test,
+                AnswerEvent.corrects_event_id,
+            ).where(
                 AnswerEvent.user_id == user_id,
                 AnswerEvent.word_id == word_id,
                 AnswerEvent.mode == mode,
             )
         )
     ).all()
-    return replay([AnswerRecord(eid, ok, at) for eid, ok, at in rows])
+    return replay(
+        [
+            AnswerRecord(eid, ok, at, is_test=is_test, corrects_event_id=corrects)
+            for eid, ok, at, is_test, corrects in rows
+        ]
+    )

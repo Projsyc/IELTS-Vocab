@@ -105,6 +105,9 @@ class AnswerRequest(CamelModel):
     #: ⭐ 客户端答题时刻。回放按此排序，不是入库时间（ADR-002）
     answered_at: datetime
     device_id: str | None = Field(default=None, max_length=64)
+    #: 非空表示这是测试模式的答题 —— 不影响 Leitner 进度（ADR-013）。
+    #: 值来自 POST /api/practice/test 的返回，服务端会校验归属。
+    test_session_id: uuid.UUID | None = None
 
 
 class DiffCharOut(CamelModel):
@@ -126,6 +129,106 @@ class AnswerResponse(CamelModel):
     correct_answer: str
     #: 仅听写模式返回，用于错误位置高亮
     diff: list[DiffCharOut] | None
-    progress: ProgressOut
+    #: 更新后的进度。**测试模式为 null** —— 测试不影响进度
+    progress: ProgressOut | None
     #: True 表示这条事件比已有记录更早（离线补传），走了全量回放
     was_replayed: bool
+    #: 本次答题的事件 id —— 要"判我对"时把它传给 /api/practice/correct
+    event_id: int
+
+
+# ─────────────────────────────────────────────────────────────
+# 测试模式（ADR-013）
+# ─────────────────────────────────────────────────────────────
+
+
+class StartTestRequest(CamelModel):
+    list_id: uuid.UUID | None = None
+    mode: PracticeMode
+    count: int = Field(default=20, ge=1, le=200)
+    #: learned = 只考已学过的 · all = 全库 · topic = 指定话题 · box = 指定盒子
+    scope: Literal["learned", "all", "topic", "box"] = "learned"
+    #: scope=topic 时是话题名；scope=box 时是盒子号（"1"–"5"）
+    scope_value: str | None = Field(default=None, max_length=50)
+
+
+class StartTestResponse(CamelModel):
+    test_session_id: uuid.UUID
+    mode: PracticeMode
+    scope: str
+    scope_value: str | None
+    total: int
+    items: list[PracticeItemOut]
+
+
+class TestSummaryOut(CamelModel):
+    test_session_id: uuid.UUID
+    mode: PracticeMode
+    scope: str
+    scope_value: str | None
+    total: int
+    answered: int
+    correct: int
+    #: 百分制
+    score: float
+    is_complete: bool
+    created_at: datetime
+
+
+class TestSessionsPage(CamelModel):
+    total: int
+    limit: int
+    offset: int
+    items: list[TestSummaryOut]
+
+
+class TestAnswerOut(CamelModel):
+    word_id: uuid.UUID
+    word: str
+    meaning_primary: str
+    user_input: str | None
+    is_correct: bool
+    answered_at: datetime
+
+
+class TestDetailOut(CamelModel):
+    summary: TestSummaryOut
+    answers: list[TestAnswerOut]
+
+
+# ─────────────────────────────────────────────────────────────
+# 判我对 / 星标
+# ─────────────────────────────────────────────────────────────
+
+
+class CorrectRequest(CamelModel):
+    #: 要更正的那条答题事件 id（提交答案时返回的 eventId）
+    event_id: int
+    answered_at: datetime
+
+
+class CorrectResponse(CamelModel):
+    correction_event_id: int
+    #: 更正后重算的进度
+    progress: ProgressOut
+
+
+class StarRequest(CamelModel):
+    note: str | None = Field(default=None, max_length=500)
+
+
+class StarredWordOut(CamelModel):
+    word_id: uuid.UUID
+    word: str
+    meaning_primary: str
+    phonetic: str | None
+    topic: str | None
+    note: str | None
+    created_at: datetime
+
+
+class StarredPage(CamelModel):
+    total: int
+    limit: int
+    offset: int
+    items: list[StarredWordOut]

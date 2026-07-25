@@ -6,9 +6,11 @@
 
 from app.models.answer_event import AnswerEvent
 from app.models.enums import BOX_INTERVALS, MAX_BOX, MIN_BOX, PracticeMode
+from app.models.test_session import TestSession
 from app.models.user import User
 from app.models.user_progress import UserProgress
 from app.models.word import Word, WordList
+from app.models.word_star import WordStar
 
 __all__ = [
     "BOX_INTERVALS",
@@ -16,8 +18,10 @@ __all__ = [
     "MIN_BOX",
     "AnswerEvent",
     "PracticeMode",
+    "TestSession",
     "User",
     "UserProgress",
     "Word",
     "WordList",
+    "WordStar",
 ]

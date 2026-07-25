@@ -24,6 +24,7 @@ from app.schemas.practice import (
     ProgressOut,
 )
 from app.services import practice as practice_service
+from app.services import testing as testing_service
 from app.services.practice import PracticeSet
 
 router = APIRouter(prefix="/api/practice", tags=["练习"])
@@ -142,6 +143,20 @@ async def submit(
             detail="answered_at 必须带时区信息",
         )
 
+    # 测试模式：校验会话属于当前用户，否则客户端能编个 id
+    # 把真实练习伪装成"不计入进度"的测试
+    if payload.test_session_id is not None:
+        session = await testing_service.get_test_session(
+            db, current_user.id, payload.test_session_id
+        )
+        if session is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="找不到这次测试")
+        if session.mode is not payload.mode:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail=f"这次测试是{session.mode.value}模式，不能提交{payload.mode.value}的答案",
+            )
+
     outcome = await practice_service.submit_answer(
         db,
         current_user,
@@ -150,6 +165,7 @@ async def submit(
         payload.user_input,
         payload.answered_at,
         payload.device_id,
+        payload.test_session_id,
     )
 
     diff = None
@@ -165,11 +181,16 @@ async def submit(
         is_correct=outcome.is_correct,
         correct_answer=outcome.correct_answer,
         diff=diff,
-        progress=ProgressOut(
-            box=outcome.progress.box,
-            next_review_at=outcome.progress.next_review_at,
-            correct_count=outcome.progress.correct_count,
-            wrong_count=outcome.progress.wrong_count,
+        progress=(
+            None
+            if outcome.progress is None
+            else ProgressOut(
+                box=outcome.progress.box,
+                next_review_at=outcome.progress.next_review_at,
+                correct_count=outcome.progress.correct_count,
+                wrong_count=outcome.progress.wrong_count,
+            )
         ),
         was_replayed=outcome.was_replayed,
+        event_id=outcome.event_id,
     )
