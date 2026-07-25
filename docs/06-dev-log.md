@@ -22,6 +22,77 @@
 
 ---
 
+## 2026-07-25 (6) M2 起步：Leitner 算法 + 事件回放（含 68 个测试）
+
+**做了什么**
+
+- **`app/services/leitner.py`** —— Leitner 状态机，全纯函数
+  - `apply_answer(box, is_correct, answered_at) -> LeitnerState`
+  - `LeitnerState` 是 frozen dataclass，转移返回新实例而非改旧的
+  - 拒绝 naive datetime（数据库列是 TIMESTAMPTZ，naive 会被静默按本地时区解释）
+- **`app/services/replay.py`** —— 事件回放
+  - `AnswerRecord` 刻意**不依赖 ORM**，所以单测不需要数据库
+  - `replay()` 全量回放（真相）、`replay_incremental()` 增量（性能）
+- **测试**：`test_leitner.py` 45 个 + `test_replay.py` 23 个 → 总计 **237 个**
+- **doctest 纳入常规测试**（`addopts = --doctest-modules`）—— 文档里的示例写错会被抓到
+
+**写之前先想清的一个坑：时间戳相同怎么排序**
+
+这不是理论问题 —— 顺序不同结果就不同：
+
+```
+先对后错 → Box 1        先错后对 → Box 2
+```
+
+没有确定的次级排序键，回放就**不可复现**，整个事件溯源的前提就破了。
+用事件的自增 `id` 做次级键（数据库里唯一且稳定），并写了 4 个测试固化这条。
+
+**三条重点性质，都写了强测试**
+
+| 性质 | 怎么验证的 |
+|------|-----------|
+| ⭐ 乱序回放 == 顺序回放 | 固定事件集打乱 200 次 + 60 组随机序列各打乱 8 次 |
+| ⭐ 时间戳相同时结果确定 | 正反两个方向的 id 顺序 + 全同时间戳打乱 100 次 |
+| ⭐ 增量 == 全量 | 逐步追加对比 + 40 组随机序列；**并固化了增量在乱序时的不等价** |
+
+最后那条值得说明：`replay_incremental` 只在"新事件确实最新"时等价于全量。
+我专门写了个测试**断言它在乱序时与全量不同** —— 这样如果有人误以为增量总是安全的、
+把冲突修复也改成走增量，测试会提醒他。
+
+**还写了个按 answered_at 排序的针对性测试**：
+
+```python
+phone_correct = AnswerRecord(102, True,  10:00)   # 离线，晚上传，id 更大
+laptop_wrong  = AnswerRecord(101, False, 14:00)   # 当场入库，id 更小
+
+按 id 排  → Box 2  ❌
+按时间排  → Box 1  ✅
+assert snap.box != 2, "看起来是按 event_id 排序了"
+```
+
+**端到端验证**（不只是单测）
+
+造 6 条事件**乱序写进真实数据库** → 读出来回放 → 结果正确（Box 1、对 4 错 2）→ 落
+`user_progress` 成功 → 清理测试数据。
+
+**顺带修的小问题**
+
+`pytest.ini` 里 `--ignore-glob` 放错位置（它是命令行选项不是 ini 选项），
+导致一条 `PytestConfigWarning`。实测不需要那个 ignore，直接删掉。
+
+**下次从哪继续**
+
+→ M2 剩余部分：
+
+1. `core/security.py` —— 密码哈希（passlib/bcrypt）+ JWT 签发校验
+2. `schemas/` —— Pydantic 请求/响应模型（对照 `docs/04-api-design.md`）
+3. 认证接口 `routers/auth.py`（login / me）
+4. 练习接口 —— 其中**干扰项生成要按 `topic` + `part_of_speech` 双重过滤**，
+   降级链见 [03-data-model §5](./03-data-model.md)
+5. 听写判定 + diff 生成（错误位置高亮）—— 也应该是纯函数，好测
+
+---
+
 ## 2026-07-25 (5) 话题打标完成 —— 🎉 M1 全部完成
 
 **做了什么**

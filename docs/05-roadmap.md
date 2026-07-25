@@ -78,12 +78,17 @@ v3.0  多端（小程序/安卓）  ░░░░░░░░░░░░ 未开�
 **下一步从这里开始。**
 
 - [ ] `core/security.py` —— 密码哈希 + JWT 签发/校验
-- [ ] **Leitner 纯函数 + 单元测试** ← 先写这个，它是算法核心
-  - [ ] `apply_answer(box, is_correct, at) -> (new_box, next_review)`
-  - [ ] 测试要覆盖：答对升箱、答错回 Box 1、Box 5 封顶
-- [ ] **事件回放函数 + 单元测试**
-  - [ ] 按 `answered_at` 排序回放
-  - [ ] 测试要覆盖：乱序事件回放结果与顺序回放一致
+- [x] **Leitner 纯函数 + 单元测试** —— `services/leitner.py`，45 个测试
+  - [x] `apply_answer(box, is_correct, at) -> LeitnerState`
+  - [x] 答对升箱 / 答错回 Box 1 / Box 5 封顶
+  - [x] 拒绝 naive datetime（数据库列是 TIMESTAMPTZ）
+  - [x] 纯函数性质、不可变性、入参不被修改
+- [x] **事件回放函数 + 单元测试** —— `services/replay.py`，23 个测试
+  - [x] 按 `(answered_at, event_id)` 排序回放
+  - [x] ⭐ **乱序回放 == 顺序回放**（200 次随机打乱 + 60 组随机序列验证）
+  - [x] ⭐ **时间戳相同时结果确定**（用自增 id 做次级键）
+  - [x] ⭐ **增量更新 == 全量回放**（并固化了增量在乱序时的已知局限）
+  - [x] 端到端验证：乱序写入真实数据库 → 回放 → 落 `user_progress`
 - [ ] 认证接口（login / me）
 - [ ] 词库接口（list / stats）
 - [ ] 练习接口（daily / session / answer）

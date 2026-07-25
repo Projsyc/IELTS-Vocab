@@ -217,7 +217,10 @@ CREATE INDEX idx_progress_due ON user_progress(user_id, mode, next_review_at);
 
 ## 3. Leitner 状态机
 
-复习间隔（可配置，默认值）：
+> **已实现**：`backend/app/services/leitner.py`（纯函数）+ `replay.py`（回放）
+> 测试：`tests/test_leitner.py`（45 个）+ `tests/test_replay.py`（23 个）
+
+复习间隔（可配置，默认值，定义在 `app/models/enums.py`）：
 
 | box | 间隔 |
 |-----|------|
@@ -227,36 +230,68 @@ CREATE INDEX idx_progress_due ON user_progress(user_id, mode, next_review_at);
 | 4 | 7 天 |
 | 5 | 15 天 |
 
-**转移规则**（纯函数，必须可单测）：
+**转移规则**（纯函数，已单测）：
 
 ```python
-BOX_INTERVALS = {1: 1, 2: 2, 3: 4, 4: 7, 5: 15}  # days
-
-def apply_answer(box: int, is_correct: bool, answered_at: datetime) -> tuple[int, datetime]:
-    """给定当前盒子号和一次答题结果，返回 (新盒子号, 下次复习时刻)。
+def apply_answer(box: int, is_correct: bool, answered_at: datetime) -> LeitnerState:
+    """给定当前盒子号和一次答题结果，返回新状态。
 
     纯函数：同样的输入永远得到同样的输出。这是事件回放能工作的前提。
     """
     if is_correct:
-        new_box = min(box + 1, 5)
+        new_box = min(box + 1, MAX_BOX)
     else:
-        new_box = 1                    # 答错直接掉回 Box 1，不是降一箱
+        new_box = MIN_BOX              # 答错直接回 Box 1，不是降一箱
 
-    next_review = answered_at + timedelta(days=BOX_INTERVALS[new_box])
-    return new_box, next_review
+    return LeitnerState(
+        box=new_box,
+        next_review_at=answered_at + timedelta(days=BOX_INTERVALS[new_box]),
+    )
 ```
 
-**回放算法**：
+**为什么必须是纯函数**：一旦引入 `datetime.now()`、随机数或数据库查询，
+重放同一批事件就可能得到不同结果，`user_progress` 的"可重算"性质就没了。
+
+### 3.1 回放算法
 
 ```python
-def replay(events: list[AnswerEvent]) -> ProgressState:
-    """从零开始回放某个 (user, word, mode) 的全部事件。"""
-    box = 1
-    next_review = None
-    for e in sorted(events, key=lambda e: e.answered_at):   # ⭐ 按客户端时间排序
-        box, next_review = apply_answer(box, e.is_correct, e.answered_at)
-    return ProgressState(box=box, next_review_at=next_review)
+def replay(events) -> ProgressSnapshot | None:
+    ordered = sorted(events, key=lambda e: (e.answered_at, e.event_id))
+    #                                        ↑ 主键          ↑ 次级键
+    box = MIN_BOX
+    for e in ordered:
+        state = apply_answer(box, e.is_correct, e.answered_at)
+        box = state.box
+    ...
 ```
+
+### 3.2 ⚠️ 排序的两个坑（都已写测试固化）
+
+**坑一：必须按 `answered_at` 排，不能按 `created_at` 或自增 `id`。**
+
+```
+手机 10:00 答对（离线） → 15:05 才上传，拿到 id=102
+电脑 14:00 答错         → 当场入库，id=101
+
+按 id 排:          错(14:00) → 对(10:00)  →  Box 2   ❌ 顺序颠倒
+按 answered_at 排: 对(10:00) → 错(14:00)  →  Box 1   ✅
+```
+
+**坑二：时间戳相同时必须有确定的次级排序键。**
+
+顺序不同结果就不同 —— 先对后错进 Box 1，先错后对进 Box 2。
+没有确定的次级键，回放**不可复现**，整个事件溯源的前提就破了。
+用事件的自增 `id`：数据库里唯一且稳定。
+
+### 3.3 增量更新与全量回放
+
+答题接口走**增量**（`replay_incremental`，快），冲突修复走**全量**（`replay`，准）。
+
+⚠️ **增量只在"新事件确实是最新的"时候等价于全量。** 离线补传的事件可能更早，
+那时必须走全量。调用方负责判断 `new_event.answered_at >= current.last_answered_at`。
+
+两者的等价性已有测试在随机事件序列上验证；增量在乱序时的**不等价**也写了测试固化，
+防止有人误以为增量总是安全的。
 
 ---
 

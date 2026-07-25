@@ -144,7 +144,8 @@ backend/.venv/bin/pip install -r backend/requirements.txt   # 后端依赖
 | 词性 | **99.6%**（从释义前缀解析） |
 | 话题 | **100%**（LLM 打标，21 类，已人工验收） |
 | 数据库 | 5 表 + 7 索引，迁移往返已验证 |
-| 测试 | 153 个 |
+| 算法 | Leitner + 事件回放（纯函数，68 个测试） |
+| 测试 | **237 个**（含 doctest） |
 
 ### 词库方案（已定案）
 
@@ -163,12 +164,22 @@ backend/.venv/bin/pip install -r backend/requirements.txt   # 后端依赖
 
 ## 下一步：M2 后端核心
 
-从这两个**纯函数 + 单测**开始（它们是算法核心，且是事件回放能工作的前提）：
+**已完成**（M2 的地基）：
 
-1. `services/leitner.py` —— `apply_answer(box, is_correct, at) -> (new_box, next_review)`
-2. `services/replay.py` —— 按 `answered_at` 排序回放事件重建进度
+- `services/leitner.py` —— Leitner 状态机，全纯函数，45 个测试
+- `services/replay.py` —— 事件回放，23 个测试
+  - ⭐ 乱序回放 == 顺序回放（已在 200 次打乱 + 60 组随机序列上验证）
+  - ⭐ 时间戳相同时按自增 `id` 确定排序
+  - ⭐ 增量更新 == 全量回放（并固化了增量在乱序时的已知局限）
 
-然后才是 API 路由。详见 [docs/05-roadmap.md](./docs/05-roadmap.md)。
+**剩余**：
+
+1. `core/security.py` —— 密码哈希 + JWT
+2. `schemas/` —— Pydantic 模型（对照 `docs/04-api-design.md`）
+3. `routers/` —— 认证、词库、练习、进度接口
+4. 听写判定 + diff 生成（也写成纯函数，好测）
+
+详见 [docs/05-roadmap.md](./docs/05-roadmap.md)。
 
 ## 开发约定
 
