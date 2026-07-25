@@ -91,7 +91,9 @@ async def daily(
     current_user: CurrentUser,
     db: DbSession,
     mode: PracticeMode = Query(description="dictation | recognition"),
-    list_id: uuid.UUID | None = Query(default=None, description="不传则用默认词库"),
+    list_id: uuid.UUID | None = Query(
+        default=None, alias="listId", description="不传则用默认词库"
+    ),
 ) -> PracticeSetOut:
     """系统自动挑词：到期复习词优先，再用新词补足到每日配额。"""
     word_list_id = await _resolve_word_list(db, list_id)

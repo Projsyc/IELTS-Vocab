@@ -22,6 +22,110 @@
 
 ---
 
+## 2026-07-25 (9) 进度接口 —— 🎉 M2 完成
+
+**做了什么**
+
+| 模块 | 内容 | 测试 |
+|------|------|------|
+| `services/progress.py` | 统计聚合、错题本、从事件重建 | — |
+| `routers/progress.py` | summary / wrong-words / rebuild | 33 |
+
+测试 409 → **443**。11 个接口全部可用。
+
+**⭐⭐ 最重要的一条验证：删库重建**
+
+端到端跑了一遍 ADR-002 的核心承诺：
+
+```
+答 10 题        → 进度表 7 行，盒子分布 {1:2, 2:5}
+删掉整个 user_progress  → 盒子分布全 0
+POST /progress/rebuild  → 读 10 条事件，重建 7 行，4ms
+                        → 盒子分布 {1:2, 2:5}  ✅ 完全一致
+```
+
+单测里还有更严格的版本：记下重建前每一行的
+`(box, correct_count, wrong_count, next_review_at)`，删表重建后逐字段比对。
+
+**这条挂了就说明混合式事件溯源的设计已经破了**，所以在测试文件开头专门标了出来。
+
+**错题本 —— 事件溯源"免费送"的能力**
+
+```
+get   错3次  最近输入: ['wrong4', 'wrong3', 'wrong2']
+say   错1次  最近输入: ['wrong5']
+go    错1次  最近输入: ['zz']
+```
+
+"这个词错过几次""每次都怎么拼错的"——只存 `user_progress` 的话
+这些数据根本不存在。用 PostgreSQL 的 `array_agg(... ORDER BY ...)` 一次查出来。
+
+**⚠️ 时区：一个不处理就会出错的细节**
+
+服务器在 UTC，用户在东八区：
+
+```
+北京时间 2026-07-25 07:00  =  UTC 2026-07-24 23:00
+→ 按 UTC 算，今天的学习被记成昨天，连续天数也会断错
+```
+
+方案是让客户端传 `tzOffsetMinutes`（`-new Date().getTimezoneOffset()`）。
+比在 users 表存时区更好 —— 用户出差换时区自动跟随。
+
+SQL 里有个坑：`answered_at` 是 TIMESTAMPTZ，直接 `(answered_at + interval)::date`
+会按**会话时区**解释，行为不确定。必须先 `AT TIME ZONE 'UTC'` 转 naive：
+
+```sql
+date(timezone('UTC', answered_at) + make_interval(mins => :offset))
+```
+
+**连续天数的定义**：今天没学**不算断** —— 从今天或昨天起往回数。
+否则用户每天早上打开都看到"连续 0 天"，体验很糟。抽成纯函数 `compute_streak` 单测。
+
+**踩坑：查询参数名大小写不一致**
+
+4 个测试失败，根因是同一个：路由声明 `tz_offset_minutes`，
+FastAPI 默认用**参数名**作查询键，所以实际是 snake_case；
+但我测试传的是 camelCase，参数被静默忽略走了默认值。
+
+修法是加 `Query(alias="tzOffsetMinutes")`。顺手也给 `practice.daily` 的
+`list_id` 加了 alias —— **body 已是驼峰，query 也该统一**，
+前端不该记"body 驼峰、query 下划线"。
+
+> 值得注意的是这个 bug 的表现：不是报错，而是**参数被静默忽略**。
+> 时区那条测试因此失败，我一度以为是 SQL 日期计算写错了，
+> 单独跑 SQL 验证后才确认计算是对的、问题在参数没传进去。
+
+**一个自己打脸的小插曲**
+
+写端到端演示脚本时，我在 `asyncio.run(wipe())` 之后又
+`asyncio.run(engine.dispose())` —— 正是我自己写进 BUG-006 的那个模式，
+当场又踩了一次。脚本是一次性的没提交，但说明这个坑确实容易复发。
+
+---
+
+## 🎉 M2 完成
+
+| | |
+|---|---|
+| 接口 | **11 个**（认证 / 词库 / 练习 / 进度） |
+| 测试 | **443 个** |
+| 核心算法 | Leitner、事件回放、听写判定、干扰项生成 —— **全是纯函数** |
+| 架构验证 | ADR-002 的"可重算"承诺已端到端验证 |
+
+**下次从哪继续 —— M3 前端**
+
+1. Tailwind + shadcn/ui 接入（[ADR-005](./08-decisions.md)）
+2. API 层封装 —— 建议直接从 `/openapi.json` 生成 TS 类型，
+   省掉手工同步 `packages/shared`（那是 [02-architecture §4.2](./02-architecture.md) 里提过的方案）
+3. 登录页 → 首页 → 听写练习页 → 阅读练习页 → 进度页 → 错题本
+
+前端要注意两点（已写进 CLAUDE.md）：
+- 调 `summary` **必须带 `tzOffsetMinutes`**
+- 阅读模式提交**选中选项的文本**，不是 index
+
+---
+
 ## 2026-07-25 (8) 词库与练习接口 —— 核心玩法已能跑通
 
 **做了什么**
