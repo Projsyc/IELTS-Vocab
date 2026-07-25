@@ -12,6 +12,8 @@
     "db:reset": "docker compose down -v && docker compose up -d",
     "db:migrate": "cd backend && .venv/bin/alembic upgrade head",
     "db:shell": "docker exec -it ielts-postgres psql -U ielts -d ielts_vocab",
+    "seed": "cd backend && .venv/bin/python -m app.scripts.seed_words",
+    "seed:status": "cd backend && .venv/bin/python -m app.scripts.seed_words --status",
     "test:backend": "cd backend && .venv/bin/python -m pytest tests/ -v",
     "build": "pnpm -r run build",
     "lint": "pnpm -r run lint",

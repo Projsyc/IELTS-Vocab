@@ -27,6 +27,60 @@
 
 ---
 
+## BUG-006 seed 脚本收尾报 "Event loop is closed"（BUG-005 的同类错误）
+
+| | |
+|---|---|
+| **日期** | 2026-07-25 |
+| **严重度** | 🟢 小问题 —— 数据已正确写入，只是退出时报错 |
+| **状态** | ✅ 已修复 |
+
+**现象**
+
+`seed_words.py` 跑完，数据全对，但退出时刷一大堆栈：
+
+```
+RuntimeError: Task ... got Future ... attached to a different loop
+RuntimeError: Event loop is closed
+```
+
+**根因**
+
+我写了这样的收尾：
+
+```python
+def main():
+    try:
+        return asyncio.run(main_async(args))    # ← 循环 1，engine 的连接在这里建立
+    finally:
+        asyncio.run(engine.dispose())           # ← 循环 2，去关循环 1 的连接 → 炸
+```
+
+**和 BUG-005 是同一类错误** —— async engine 的连接池绑定在创建它的事件循环上。
+刚在测试里踩过一次，写脚本时又踩了，说明这个模式很容易复现。
+
+**解决方案**
+
+在同一个循环内销毁：
+
+```python
+async def main_async(args):
+    try:
+        ...
+    finally:
+        await engine.dispose()      # ← 本循环内
+
+def main():
+    return asyncio.run(main_async(args))
+```
+
+**如何避免再犯**
+
+**记住这条规则**：`engine.dispose()` 必须 `await` 在建立连接的那个循环里，
+永远不要用第二个 `asyncio.run()` 去清理第一个 `asyncio.run()` 留下的资源。
+
+---
+
 ## BUG-005 pytest 里第二个 async 测试报 "Event loop is closed"
 
 | | |
