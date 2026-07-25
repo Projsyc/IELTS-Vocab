@@ -363,13 +363,38 @@ Query：mode, limit, offset
 | POST | `/api/practice/session` | 自由练习 | ✅ 已实现 |
 | POST | `/api/practice/answer` | 提交答题 | ✅ 已实现 |
 | POST | `/api/practice/answers/batch` | 批量提交（离线） | v2 |
-| GET | `/api/progress/summary` | 学习总览 | 🔜 待实现 |
-| GET | `/api/progress/wrong-words` | 错题本 | 🔜 待实现 |
-| POST | `/api/progress/rebuild` | 重算进度 | 🔜 待实现 |
+| GET | `/api/progress/summary` | 学习总览 | ✅ 已实现 |
+| GET | `/api/progress/wrong-words` | 错题本 | ✅ 已实现 |
+| POST | `/api/progress/rebuild` | 重算进度 | ✅ 已实现 |
 | GET | `/api/health` | 健康检查 | ✅ 已实现 |
 
-> 字段命名：请求与响应统一用 **camelCase**（与 `packages/shared` 的 TS 类型一致），
-> 后端内部用 snake_case，由 Pydantic 的 `alias_generator` 自动转换。
+> 字段命名：请求体、响应、**查询参数**统一用 camelCase
+> （与 `packages/shared` 的 TS 类型一致）。后端内部用 snake_case，
+> 由 Pydantic 的 `alias_generator` 与 `Query(alias=...)` 转换。
+
+---
+
+## 7. 时区处理 ⚠️
+
+`GET /api/progress/summary` 的 **"今日"和"连续天数"依赖客户端时区**。
+
+服务器跑在 UTC，用户在东八区：
+
+```
+北京时间 2026-07-25 07:00  =  UTC 2026-07-24 23:00
+→ 按 UTC 算会把今天的学习记成昨天，连续天数也会断错
+```
+
+所以前端**必须**带上 `tzOffsetMinutes`：
+
+```js
+const offset = -new Date().getTimezoneOffset();   // 北京 → 480
+fetch(`/api/progress/summary?tzOffsetMinutes=${offset}`)
+```
+
+不传则按 UTC 算（合法值范围 −720 ~ 840，覆盖 UTC−12 ~ UTC+14）。
+
+比在 `users` 表存时区更好：用户出差换时区时自动跟随，不用改设置。
 
 ---
 
