@@ -105,7 +105,9 @@ pnpm db:shell               # 进 psql
 # —— 词库 ——
 pnpm seed                   # 导入词库（可断点续跑，中断了重跑即可）
 pnpm seed:status            # 只看进度，不改数据
-# 试跑：cd backend && .venv/bin/python -m app.scripts.seed_words --limit 20
+pnpm tag                    # LLM 打话题标签（需 .env 里的 LLM_API_KEY）
+pnpm tag:status             # 看话题分布
+pnpm tag:review             # 抽样人工校验标签质量
 
 pnpm test:backend           # 后端测试（需数据库在跑）
 pnpm build / pnpm lint      # 构建 / lint 全部
@@ -132,29 +134,41 @@ backend/.venv/bin/pip install -r backend/requirements.txt   # 后端依赖
 
 ## 当前状态
 
-**v0.1 已完成**：骨架搭建 + 需求确定 + 文档
-**M1 调研已完成**：词库数据源定案，最大风险解除（见 [docs/09](./docs/09-wordlist-research.md)）
+**✅ M1 完成** —— 词库数据全部就位
+
+| 内容 | 状态 |
+|------|------|
+| 词库 | **4,768 词**（ECDICT ielts 子集，剔除 272 个冗余屈折形式） |
+| 音频 | **100%**（75.6% 真人 + 24.4% edge-tts，84.7MB，全本地） |
+| 音标 | **99.2%**（dictionaryapi.dev 真 IPA + 清洗版 ECDICT 兜底） |
+| 词性 | **99.6%**（从释义前缀解析） |
+| 话题 | **100%**（LLM 打标，21 类，已人工验收） |
+| 数据库 | 5 表 + 7 索引，迁移往返已验证 |
+| 测试 | 153 个 |
 
 ### 词库方案（已定案）
 
-| 内容 | 来源 | 覆盖 |
-|------|------|------|
-| 词表 | [ECDICT](https://github.com/skywind3000/ECDICT) `tag` 含 `ielts`（**MIT**） | 5,040 → 剔冗余屈折形式 → **4,768 词** |
-| 释义 | ECDICT `translation`，拆成完整 + 首义双字段 | 100% |
-| 词性 | 从 `translation` 前缀解析 | 99.5% |
-| 音标 | dictionaryapi.dev 真 IPA + 清洗版 ECDICT 兜底 | ~96% |
-| 音频 | dictionaryapi.dev 真人 + edge-tts 补齐，**全部下载本地** | ~100% |
-| 话题标签 | LLM 批量打标（无现成数据源） | 待做 |
+| 内容 | 来源 |
+|------|------|
+| 词表 + 释义 | [ECDICT](https://github.com/skywind3000/ECDICT)（**MIT**）`tag` 含 `ielts` |
+| 音标 | dictionaryapi.dev 真 IPA，缺的用清洗版 ECDICT |
+| 音频 | dictionaryapi.dev 真人 + edge-tts 补齐，全部下载本地 |
+| 话题 | DeepSeek `deepseek-v4-flash` 打标，20 话题 + `通用/抽象` 兜底 |
 
-⚠️ **两个已踩的坑，改音标相关代码前必读**：
+⚠️ **三个已踩的坑，改相关代码前必读**：
 
 1. **ECDICT 音标不是标准 IPA**（简化记音 + 混入西里尔 `ә`），规则转换不可行 —— 已实测 0/8 一致。所以音标优先从 API 取。
-2. **`.` 在两个数据源里含义完全不同** —— ECDICT 里是**次重音**（→ `ˌ`），API 的 IPA 里是**音节分隔**（→ 删掉）。别把 `clean_ecdict_phonetic` 和 `normalize_api_phonetic` "统一"了，已有测试钉住这条差异。
+2. **`.` 在两个数据源里含义相反** —— ECDICT 里是**次重音**（→ `ˌ`），API 的 IPA 里是**音节分隔**（→ 删掉）。别把 `clean_ecdict_phonetic` 和 `normalize_api_phonetic` "统一"了，已有测试钉住。
+3. **干扰项必须同时按 `topic` + `part_of_speech` 过滤** —— 释义自带词性前缀（`n.` / `vt.`），只按话题过滤会让用户靠数前缀排除答案。见 [docs/03 §5](./docs/03-data-model.md)。
 
-**下一步（M1 剩余）**：
-1. ~~PostgreSQL + Alembic 建表~~ ✅ 5 表 + 7 索引，迁移往返已验证
-2. ~~`scripts/seed_words.py`~~ ✅ 三阶段，断点续跑已实测
-3. `scripts/tag_topics.py` —— LLM 打话题标签 + 抽样校验 ← **就剩这个**
+## 下一步：M2 后端核心
+
+从这两个**纯函数 + 单测**开始（它们是算法核心，且是事件回放能工作的前提）：
+
+1. `services/leitner.py` —— `apply_answer(box, is_correct, at) -> (new_box, next_review)`
+2. `services/replay.py` —— 按 `answered_at` 排序回放事件重建进度
+
+然后才是 API 路由。详见 [docs/05-roadmap.md](./docs/05-roadmap.md)。
 
 ## 开发约定
 
