@@ -109,6 +109,11 @@ pnpm tag                    # LLM 打话题标签（需 .env 里的 LLM_API_KEY�
 pnpm tag:status             # 看话题分布
 pnpm tag:review             # 抽样人工校验标签质量
 
+# —— 账号（邀请制，无注册接口）——
+pnpm user:create alice      # 建账号（密码交互式输入）
+pnpm user:list              # 列出账号
+# 改密码：cd backend && .venv/bin/python -m app.scripts.manage_users passwd alice
+
 pnpm test:backend           # 后端测试（需数据库在跑）
 pnpm build / pnpm lint      # 构建 / lint 全部
 
@@ -164,22 +169,34 @@ backend/.venv/bin/pip install -r backend/requirements.txt   # 后端依赖
 
 ## 下一步：M2 后端核心
 
-**已完成**（M2 的地基）：
+**已完成**：
 
-- `services/leitner.py` —— Leitner 状态机，全纯函数，45 个测试
-- `services/replay.py` —— 事件回放，23 个测试
-  - ⭐ 乱序回放 == 顺序回放（已在 200 次打乱 + 60 组随机序列上验证）
-  - ⭐ 时间戳相同时按自增 `id` 确定排序
-  - ⭐ 增量更新 == 全量回放（并固化了增量在乱序时的已知局限）
+| 模块 | 内容 | 测试 |
+|------|------|------|
+| `services/leitner.py` | Leitner 状态机，全纯函数 | 45 |
+| `services/replay.py` | 事件回放（乱序一致、增量==全量） | 23 |
+| `services/dictation.py` | 听写判定 + Levenshtein 错误高亮 | 50 |
+| `core/security.py` | bcrypt 哈希 + JWT | 30 |
+| `routers/auth.py` | login / me | 23 |
+| `scripts/manage_users.py` | 邀请制手动开号 | — |
 
 **剩余**：
 
-1. `core/security.py` —— 密码哈希 + JWT
-2. `schemas/` —— Pydantic 模型（对照 `docs/04-api-design.md`）
-3. `routers/` —— 认证、词库、练习、进度接口
-4. 听写判定 + diff 生成（也写成纯函数，好测）
+1. 词库接口（list / stats）
+2. 练习接口（daily / session / answer）—— 干扰项生成是重点
+3. 进度接口（summary / wrong-words / rebuild）
 
 详见 [docs/05-roadmap.md](./docs/05-roadmap.md)。
+
+## ⚠️ async engine 与事件循环（这个坑踩了三次）
+
+**async engine 的连接池绑定在创建它的事件循环上。** 三条规则：
+
+1. 测试里的 engine 必须是 fixture，每个测试新建并 `dispose`
+2. `dispose` 必须 `await` 在建立连接的那个循环里 —— 别用第二个 `asyncio.run()` 清理第一个的资源
+3. **HTTP 测试必须覆盖 `get_db` 依赖**，否则 app 会用模块级 engine
+
+生产代码不受影响（一个进程一个循环）。详见 [BUG-005/006/008](./docs/07-bug-log.md)。
 
 ## 开发约定
 

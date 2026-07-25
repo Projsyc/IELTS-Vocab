@@ -77,7 +77,10 @@ v3.0  多端（小程序/安卓）  ░░░░░░░░░░░░ 未开�
 
 **下一步从这里开始。**
 
-- [ ] `core/security.py` —— 密码哈希 + JWT 签发/校验
+- [x] `core/security.py` —— bcrypt 密码哈希 + JWT 签发/校验，30 个测试
+  - [x] ⚠️ **改用 bcrypt 直接调用，移除 passlib**（passlib 停更，读不了 bcrypt 5.0 版本号，[BUG-007](./07-bug-log.md)）
+  - [x] SHA-256 预哈希绕开 bcrypt 的 72 字节上限与 NUL 截断
+  - [x] 安全场景测试：alg=none 攻击、伪造密钥、过期、篡改签名、损坏哈希
 - [x] **Leitner 纯函数 + 单元测试** —— `services/leitner.py`，45 个测试
   - [x] `apply_answer(box, is_correct, at) -> LeitnerState`
   - [x] 答对升箱 / 答错回 Box 1 / Box 5 封顶
@@ -89,13 +92,23 @@ v3.0  多端（小程序/安卓）  ░░░░░░░░░░░░ 未开�
   - [x] ⭐ **时间戳相同时结果确定**（用自增 id 做次级键）
   - [x] ⭐ **增量更新 == 全量回放**（并固化了增量在乱序时的已知局限）
   - [x] 端到端验证：乱序写入真实数据库 → 回放 → 落 `user_progress`
-- [ ] 认证接口（login / me）
+- [x] **听写判定 + diff 生成** —— `services/dictation.py`，50 个测试
+  - [x] 严格匹配（忽略首尾空格与大小写），差一字母即判错
+  - [x] Levenshtein 对齐生成错误位置高亮（漏字母只报 1 处错，不是全线错位）
+  - [x] 覆盖真实雅思拼写错误：漏双写字母、ie/ei 颠倒、多字母、替换
+  - [x] 双向可还原性测试（从 diff 能还原出正确答案，也能还原出用户输入）
+- [x] 认证接口（login / me）—— `routers/auth.py`，23 个 HTTP 测试
+  - [x] ⭐ 用户名不存在与密码错误返回**完全相同**的 401（防用户名枚举）
+  - [x] 响应绝不含 `password_hash` / 微信字段（已写测试守护）
+  - [x] camelCase 输出，与 `packages/shared` 的 TS 类型一致
+  - [x] `scripts/manage_users.py` —— 邀请制手动开号（密码走 getpass，不进 shell 历史）
 - [ ] 词库接口（list / stats）
 - [ ] 练习接口（daily / session / answer）
-  - [ ] 听写判定 + diff 生成（错误位置高亮）
+  - [x] 听写判定 + diff 生成（错误位置高亮）—— 已完成，见上
   - [ ] **阅读干扰项生成** —— ⚠️ 必须同时按 `topic` + `part_of_speech` 过滤，
         否则释义前缀泄露答案（见 [03-data-model §5](./03-data-model.md)）
   - [ ] 降级链：同话题+同词性 → 同话题 → 同词性 → 全库随机
+  - [ ] 答题落库：追加 `answer_events` + 增量更新 `user_progress`
 - [ ] 进度接口（summary / wrong-words / rebuild）
 
 ### M3 前端
