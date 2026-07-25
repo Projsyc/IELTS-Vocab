@@ -1,0 +1,33 @@
+# IELTS-Vocab 本地开发环境
+#
+# 启动：docker compose up -d
+# 停止：docker compose down
+# 清库重来：docker compose down -v   （-v 会删掉数据卷！）
+#
+# 连接串见 backend/.env.example
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: ielts-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ielts
+      POSTGRES_PASSWORD: ielts_dev_pw
+      POSTGRES_DB: ielts_vocab
+      # 让 gen_random_uuid() 可用（PG 13+ 内置于 pgcrypto，见 init 脚本）
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ielts -d ielts_vocab"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:
+    name: ielts_postgres_data
