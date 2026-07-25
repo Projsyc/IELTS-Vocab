@@ -27,6 +27,125 @@
 
 ---
 
+## BUG-008 async engine 与事件循环 —— 同一根因踩了三次
+
+| | |
+|---|---|
+| **日期** | 2026-07-25 |
+| **严重度** | 🟡 影响测试与脚本 |
+| **状态** | ✅ 已修复，并整理成通用规则 |
+
+**这不是一个新 BUG，而是 BUG-005 / BUG-006 的第三次复发。** 单独列出来是因为
+同一根因换三个地方咬人，说明需要一条能记住的规则，而不是三条各自的修复。
+
+### 根因（一句话）
+
+**async engine 的连接池绑定在创建它的事件循环上。**
+pytest-asyncio 默认每个测试一个新循环，所以任何跨循环复用的 engine
+在第二次使用时必然报 `RuntimeError: Event loop is closed`。
+
+### 三次现场
+
+| # | 场景 | 错误的写法 |
+|---|------|-----------|
+| BUG-005 | 单测里查表 | 测试里直接 import 模块级 `engine` |
+| BUG-006 | 脚本收尾 | `finally: asyncio.run(engine.dispose())` —— 用第二个循环关第一个循环的连接 |
+| 本条 | HTTP 测试 | 打 `main.app`，而 app 里的路由通过 `get_db` 用模块级 engine |
+
+第三次的表现很有迷惑性：**前 19 个测试过，4 个挂**。
+挂的是那些在同一测试里发起多次请求、或请求路径更长的 —— 看着像随机失败。
+
+### 三条规则（已写进 `tests/conftest.py` 文件头）
+
+```
+1. 测试里的 engine 必须是 fixture，每个测试新建并 dispose
+2. dispose 必须 await 在建立连接的那个循环里，
+   永远不要用第二个 asyncio.run() 清理第一个留下的资源
+3. HTTP 测试必须覆盖 get_db 依赖，否则 app 会用模块级 engine
+```
+
+第 3 条的写法：
+
+```python
+@pytest_asyncio.fixture
+async def client(db_session):
+    async def _override_get_db():
+        yield db_session
+
+    main.app.dependency_overrides[get_db] = _override_get_db
+    try:
+        async with AsyncClient(transport=ASGITransport(app=main.app), ...) as c:
+            yield c
+    finally:
+        main.app.dependency_overrides.clear()
+```
+
+顺带的好处：app 与测试共用一个 session，测试里创建的数据对被测接口立即可见，
+不用操心事务隔离。
+
+### 为什么生产代码不受影响
+
+生产环境整个进程只有一个事件循环（uvicorn 建的），模块级 engine 完全正常。
+**这个坑只在"一个进程里存在多个事件循环"时出现** —— 也就是测试和 CLI 脚本。
+
+---
+
+## BUG-007 passlib 读不了 bcrypt 5.0 的版本号
+
+| | |
+|---|---|
+| **日期** | 2026-07-25 |
+| **严重度** | 🔴 阻塞 — 密码哈希完全不可用 |
+| **状态** | ✅ 已修复（改为直接用 bcrypt，移除 passlib） |
+
+**现象**
+
+按 `requirements.txt` 里原定的 `passlib[bcrypt]` 写密码哈希，一跑就炸：
+
+```
+(trapped) error reading bcrypt version
+AttributeError: module 'bcrypt' has no attribute '__about__'
+ValueError: password cannot be longer than 72 bytes, truncate manually if necessary
+```
+
+**根因**
+
+passlib 1.7.4 靠读 `bcrypt.__about__.__version__` 探测后端版本，
+但 **bcrypt 4.1+ 已移除该属性**（我们装的是 5.0.0）。
+版本探测失败后 passlib 走了一条降级路径，那条路径也是坏的。
+
+passlib 最后一次发版是 **2020 年**，实际已停止维护，不会有适配。
+
+**解决方案**
+
+移除 passlib，直接用 `bcrypt` 库 —— API 只有两个函数：
+
+```python
+bcrypt.hashpw(pw_bytes, bcrypt.gensalt())   # 哈希
+bcrypt.checkpw(pw_bytes, stored)            # 校验
+```
+
+**但要处理 bcrypt 的 72 字节上限**（超了直接抛 ValueError，且遇 NUL 字节会截断）。
+方案是 SHA-256 预哈希：
+
+```python
+def _prehash(password: str) -> bytes:
+    return base64.b64encode(hashlib.sha256(password.encode()).digest())   # 恒定 44 字节
+```
+
+这同时解决长度上限和 NUL 截断两个问题，是业界常见做法。
+
+⚠️ **预哈希方式一旦上线就不能改** —— 改了所有已存密码失效。
+真要改需加 `users.hash_version` 字段做迁移。已在 `core/security.py` 模块 docstring 写明。
+
+**如何避免再犯**
+
+- 选依赖时先看**最后发版时间**。passlib 停更 6 年，本该是个信号
+- 装完立刻写个最小验证脚本跑一遍，别等写完整个模块才发现底层不可用
+- 已写测试守护关键性质：超长密码可用、72 字节之后的差异能被区分、NUL 字节不截断
+
+---
+
 ## BUG-006 seed 脚本收尾报 "Event loop is closed"（BUG-005 的同类错误）
 
 | | |

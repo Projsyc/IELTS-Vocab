@@ -17,6 +17,8 @@
     "tag": "cd backend && .venv/bin/python -m app.scripts.tag_topics",
     "tag:status": "cd backend && .venv/bin/python -m app.scripts.tag_topics --status",
     "tag:review": "cd backend && .venv/bin/python -m app.scripts.tag_topics --review 40",
+    "user:create": "cd backend && .venv/bin/python -m app.scripts.manage_users create",
+    "user:list": "cd backend && .venv/bin/python -m app.scripts.manage_users list",
     "test:backend": "cd backend && .venv/bin/python -m pytest tests/ -v",
     "build": "pnpm -r run build",
     "lint": "pnpm -r run lint",

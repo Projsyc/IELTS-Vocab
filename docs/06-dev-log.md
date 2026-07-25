@@ -22,6 +22,119 @@
 
 ---
 
+## 2026-07-25 (7) 听写判定 + 认证接口 —— 已能真实登录
+
+**做了什么**
+
+| 模块 | 内容 | 测试 |
+|------|------|------|
+| `services/dictation.py` | 听写判定 + Levenshtein 错误位置高亮 | 50 |
+| `core/security.py` | bcrypt 密码哈希 + JWT | 30 |
+| `core/deps.py` | `get_current_user` 依赖注入 | — |
+| `schemas/auth.py` | Pydantic 模型（camelCase 输出） | — |
+| `routers/auth.py` | login / me | 23 |
+| `scripts/manage_users.py` | 邀请制手动开号 | — |
+
+测试总数 237 → **342**。
+
+**听写 diff 为什么要用编辑距离**
+
+逐位比较在漏字母时会全线崩掉：
+
+```
+用户   a c c o m o d a t e      （少一个 m）
+正确   a c c o m m o d a t e
+
+逐位比较：位置 5 之后全部错位 → 报 6 个错，用户看不出问题在哪
+对齐后：  只报"位置 5 少了个 m" → 一眼看懂
+```
+
+用 Levenshtein DP 求最小编辑脚本再回溯出对齐。单词只有十几字符，性能不是问题。
+
+实测效果（真实雅思拼写错误）：
+
+```
+accomodate  → 1 处：missing 'm'
+acommodate  → 1 处：missing 'c'
+accommadate → 1 处：wrong a→o
+recieve     → 2 处：wrong（ie/ei 颠倒的最小编辑就是 2 次替换）
+enviroment  → 1 处：missing 'n'
+```
+
+还写了**双向可还原性测试** —— 从 diff 既能还原出正确答案，也能还原出用户输入，
+证明对齐过程没丢字符。
+
+**踩坑：passlib 不能用（BUG-007）**
+
+按原定的 `passlib[bcrypt]` 写完密码哈希，一跑就炸：
+
+```
+AttributeError: module 'bcrypt' has no attribute '__about__'
+```
+
+passlib 1.7.4 靠读 `bcrypt.__about__.__version__` 探测版本，但 bcrypt 4.1+ 已移除该属性。
+**passlib 最后一次发版是 2020 年**，实际停止维护，不会有适配。
+
+改为直接用 `bcrypt` 库（API 只有两个函数），并用 **SHA-256 预哈希**绕开 bcrypt 的
+72 字节上限与 NUL 截断问题。写了测试守护：超长密码可用、72 字节之后的差异能被区分。
+
+> 教训：选依赖先看最后发版时间。停更 6 年本该是个信号。
+> 而且装完该立刻写个最小验证脚本，别等写完整个模块才发现底层不可用。
+
+**同一个坑踩了第三次（BUG-008）**
+
+HTTP 测试打 `main.app` 时又报 "Event loop is closed" —— 19 个过、4 个挂，看着像随机失败。
+
+根因还是那个：**async engine 的连接池绑定在创建它的事件循环上**。
+这次是 app 里的路由通过 `get_db` 用了模块级 engine。
+
+三次现场：
+| # | 场景 |
+|---|------|
+| BUG-005 | 单测里直接用模块级 engine |
+| BUG-006 | 脚本用第二个 `asyncio.run()` 去 dispose |
+| BUG-008 | HTTP 测试打 app，app 内部用模块级 engine |
+
+已整理成三条规则写进 `tests/conftest.py` 文件头和 CLAUDE.md，不再一次次现修。
+第三条的解法是覆盖 `get_db` 依赖，顺带的好处是 app 与测试共用 session，
+测试数据对被测接口立即可见。
+
+**安全上刻意做的几件事**
+
+- **用户名不存在与密码错误返回完全相同的 401** —— 否则能靠错误信息枚举有效用户名。
+  而且即便用户不存在也走一次密码校验，让两条路径耗时接近，减少时序侧信道。
+- 响应绝不含 `password_hash` 与微信字段，**写了测试守护**（直接断言哈希串不在响应体里）
+- JWT 测试覆盖 `alg=none` 攻击、伪造密钥签名、篡改签名、过期
+- 建账号脚本的密码走 `getpass` 交互输入，**不接受命令行参数** —— 参数会留在 shell 历史和进程列表里
+
+**端到端验证**
+
+起真实 uvicorn，走完整链路：
+
+```
+健康检查            200
+未登录访问 /me      401
+错密码登录          401
+正确登录            拿到 188 字符 token
+带 token 访问 /me   返回用户信息，camelCase，无敏感字段
+```
+
+**下次从哪继续**
+
+→ M2 剩余的三组接口：
+
+1. **词库接口**（list / stats）—— 相对简单，先热身
+2. **练习接口**（daily / session / answer）—— 重点是干扰项生成：
+   - ⚠️ 必须同时按 `topic` + `part_of_speech` 过滤，否则释义前缀泄露答案
+   - 降级链：同话题+同词性 → 同话题 → 同词性 → 全库随机
+   - 答题落库：追加 `answer_events` + 增量更新 `user_progress`
+3. **进度接口**（summary / wrong-words / rebuild）
+
+建议顺序：先把干扰项生成写成**纯函数 + 单测**（给定候选词列表返回选项），
+再接数据库查询 —— 和 Leitner/dictation 一样的路子，好测。
+
+---
+
 ## 2026-07-25 (6) M2 起步：Leitner 算法 + 事件回放（含 68 个测试）
 
 **做了什么**
