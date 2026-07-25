@@ -12,23 +12,30 @@
 │  users   │────┬───>│  answer_events   │  只追加，永不改
 └──────────┘    │    │  （事实来源）      │
                 │    └──────────────────┘
-                │              │ 回放
-                │              ↓
-                │    ┌──────────────────┐
-                └───>│  user_progress   │  缓存，可从事件重算
-                     │  （查询用）        │
-                     └──────────────────┘
-                              │
-┌──────────────┐              │
-│  word_lists  │              │
-└──────────────┘              │
-        │ 1:N                 │
-        ↓                     ↓
+                │       │ 回放      │ 归属
+                │       ↓           ↓
+                │    ┌──────────────────┐  ┌────────────────┐
+                └───>│  user_progress   │  │ test_sessions  │
+                │    │  （缓存，可重算）  │  │ （一次测试）    │
+                │    └──────────────────┘  └────────────────┘
+                │
+                │    ┌────────────────┐
+                └───>│  word_stars    │  用户书签，**不是**事件的推论
+                     └────────────────┘
+┌──────────────┐
+│  word_lists  │
+└──────────────┘
+        │ 1:N
+        ↓
 ┌──────────────────────────────────┐
 │           words                  │
 │  （词形/释义/音标/音频/话题）       │
 └──────────────────────────────────┘
 ```
+
+> ⚠️ `word_stars` 单独一张表而非塞进 `user_progress` ——
+> 星标是用户主动打的书签，**不可能从事件重算**，
+> 塞进去会被 `POST /progress/rebuild` 抹掉（见 [ADR-013](./08-decisions.md)）。
 
 ---
 
@@ -256,14 +263,28 @@ def apply_answer(box: int, is_correct: bool, answered_at: datetime) -> LeitnerSt
 
 ```python
 def replay(events) -> ProgressSnapshot | None:
-    ordered = sorted(events, key=lambda e: (e.answered_at, e.event_id))
-    #                                        ↑ 主键          ↑ 次级键
-    box = MIN_BOX
-    for e in ordered:
-        state = apply_answer(box, e.is_correct, e.answered_at)
-        box = state.box
-    ...
+    # 第一趟：收集被更正的事件 id
+    corrected = {e.corrects_event_id for e in events if e.corrects_event_id}
+
+    # 第二趟：排除更正事件本身与测试事件
+    scoring = [e for e in events if not e.is_correction and not e.is_test]
+
+    for e in sorted(scoring, key=lambda e: (e.answered_at, e.event_id)):
+        #                                    ↑ 主键          ↑ 次级键
+        verdict = True if e.event_id in corrected else e.is_correct
+        box = apply_answer(box, verdict, e.answered_at).box
 ```
+
+**两类特殊事件**（[ADR-013](./08-decisions.md)）：
+
+| 类型 | 判别 | 回放时 |
+|------|------|--------|
+| 测试事件 | `is_test = true` | **直接跳过** —— 测试"错了就是错了"，不进 Leitner 循环 |
+| 更正事件 | `corrects_event_id` 非空 | **本身不参与转移**，而是把被指向的事件视为答对 |
+
+> ⚠️ **所有从数据库构造 `AnswerRecord` 的地方都必须查出这两个字段。**
+> 它们有默认值，漏了不报错但会静默算错（已踩，见 BUG-010）。
+> 检查方法：`grep -rn "AnswerRecord(" app/`
 
 ### 3.2 ⚠️ 排序的两个坑（都已写测试固化）
 

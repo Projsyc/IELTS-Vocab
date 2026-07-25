@@ -344,14 +344,24 @@ async def rebuild_all_progress(
                 AnswerEvent.mode,
                 AnswerEvent.is_correct,
                 AnswerEvent.answered_at,
+                AnswerEvent.is_test,
+                AnswerEvent.corrects_event_id,
             ).where(*conditions)
         )
     ).all()
 
     # 按 (词, 模式) 分组 —— 进度的主键就是这个三元组（加 user_id）
+    #
+    # ⚠️ is_test / corrects_event_id 必须带上，否则 replay() 无法跳过测试事件、
+    #    无法应用更正 —— 会把更正事件当成又一次答对（见 BUG-010）。
     grouped: dict[tuple[uuid.UUID, PracticeMode], list[AnswerRecord]] = defaultdict(list)
-    for event_id, wid, mode, is_correct, answered_at in events:
-        grouped[(wid, mode)].append(AnswerRecord(event_id, is_correct, answered_at))
+    for event_id, wid, mode, is_correct, answered_at, is_test, corrects in events:
+        grouped[(wid, mode)].append(
+            AnswerRecord(
+                event_id, is_correct, answered_at,
+                is_test=is_test, corrects_event_id=corrects,
+            )
+        )
 
     # 现有的进度行（用于找孤儿）
     existing_conditions = [UserProgress.user_id == user_id]
@@ -368,7 +378,10 @@ async def rebuild_all_progress(
     rebuilt = 0
     for (wid, mode), records in grouped.items():
         snapshot = replay(records)
-        if snapshot is None:      # 分组非空，理论上不会发生
+        if snapshot is None:
+            # 这一组全是测试事件（不计入进度）。**故意不 pop** ——
+            # 让已有的进度行留在 existing 里，下面当孤儿删掉。
+            # 只在测试模式练过的词本来就不该有学习进度。
             continue
 
         row = existing.pop((wid, mode), None)

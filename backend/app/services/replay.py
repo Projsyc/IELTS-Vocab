@@ -65,15 +65,26 @@ class AnswerRecord:
         event_id:    事件自增主键。时间戳相同时作为确定性次级排序键。
         is_correct:  答对没。
         answered_at: 客户端答题时刻（必须 aware）。回放的主排序键。
+        is_test:     测试模式的答题。**回放时跳过** —— 测试"错了就是错了"，
+                     不进 Leitner 循环（ADR-013）。
+        corrects_event_id: 非空表示这是一条"其实我会"的更正事件，
+                     指向被更正的那次答题。回放时把被指向的事件视为答对；
+                     更正事件本身不参与状态转移。
     """
 
     event_id: int
     is_correct: bool
     answered_at: datetime
+    is_test: bool = False
+    corrects_event_id: int | None = None
 
     def __post_init__(self) -> None:
         if self.answered_at.tzinfo is None:
             raise ValueError("answered_at 必须带时区信息（aware datetime）")
+
+    @property
+    def is_correction(self) -> bool:
+        return self.corrects_event_id is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,10 +125,24 @@ def sort_events(events: Iterable[AnswerRecord]) -> list[AnswerRecord]:
 def replay(events: Sequence[AnswerRecord] | Iterable[AnswerRecord]) -> ProgressSnapshot | None:
     """从零回放全部事件，重建某个 (用户, 单词, 模式) 的进度。
 
-    返回 None 表示没有任何事件 —— 该词对该用户是"新词"，
+    返回 None 表示没有任何**计入进度**的事件 —— 该词对该用户是"新词"，
     在 user_progress 里就不该有行。
 
     纯函数：同样的事件集合（无论传入顺序）永远得到同样的结果。
+
+    ═══════════════════════════════════════════════════════════════
+    两类特殊事件的处理（ADR-013）
+    ═══════════════════════════════════════════════════════════════
+
+    **测试事件**（`is_test=True`）直接跳过。
+        测试模式"错了就是错了"，不进 Leitner 循环。
+        它们仍在事件表里（要出成绩、进错题本），只是不影响进度。
+
+    **更正事件**（`corrects_event_id` 非空）不参与状态转移，
+        而是把被指向的那条事件**视为答对**。
+
+        这是事件溯源处理事后更正的标准做法：追加一条更正，
+        而不是改写历史。原事件原封不动，回放时应用更正。
 
     >>> from datetime import UTC, datetime, timedelta
     >>> t0 = datetime(2026, 7, 1, tzinfo=UTC)
@@ -129,8 +154,25 @@ def replay(events: Sequence[AnswerRecord] | Iterable[AnswerRecord]) -> ProgressS
     >>> snap = replay(evs)
     >>> snap.box, snap.correct_count, snap.wrong_count
     (1, 2, 1)
+
+    加一条更正，把第 3 次改判为对：
+
+    >>> evs.append(AnswerRecord(4, True, t0 + timedelta(days=7), corrects_event_id=3))
+    >>> snap = replay(evs)
+    >>> snap.box, snap.correct_count, snap.wrong_count
+    (4, 3, 0)
     """
-    ordered = sort_events(events)
+    all_events = list(events)
+
+    # 第一趟：收集被更正的事件 id
+    corrected_ids = {
+        e.corrects_event_id for e in all_events if e.corrects_event_id is not None
+    }
+
+    # 第二趟：只保留真正的答题事件（排除更正事件本身和测试事件）
+    scoring = [e for e in all_events if not e.is_correction and not e.is_test]
+
+    ordered = sort_events(scoring)
     if not ordered:
         return None
 
@@ -140,9 +182,12 @@ def replay(events: Sequence[AnswerRecord] | Iterable[AnswerRecord]) -> ProgressS
     wrong = 0
 
     for event in ordered:
-        state = apply_answer(box, event.is_correct, event.answered_at)
+        # 被更正过的事件，视为答对
+        verdict = True if event.event_id in corrected_ids else event.is_correct
+
+        state = apply_answer(box, verdict, event.answered_at)
         box = state.box
-        if event.is_correct:
+        if verdict:
             correct += 1
         else:
             wrong += 1
@@ -165,13 +210,29 @@ def replay_incremental(
 ) -> ProgressSnapshot:
     """增量更新 —— 用户答一道题时走这条路（快），不必重放全部历史。
 
-    ⚠️ **只有在 new_event 确实是最新事件时才等价于全量回放。**
-       离线补传的事件可能比已记录的更早，那时必须走 `replay()` 全量重算。
-       调用方负责判断：`new_event.answered_at >= current.last_answered_at`。
+    ⚠️ **三种情况下不能用增量，必须走 `replay()` 全量重算：**
+
+        1. `new_event` 比已记录的 `last_answered_at` 更早（离线补传）
+           —— 顺序错了结果就错了
+        2. `new_event` 是**更正事件** —— 它要改的是过去某条事件的判定，
+           增量根本表达不了这个语义
+        3. 事件集合里有**测试事件** —— 增量不知道该跳过哪些
+
+    调用方负责判断第 1 条；第 2、3 条这里直接拒绝，早失败好过静默算错。
 
     这个函数是性能优化，`replay()` 才是真相。两者结果必须一致 ——
-    已有测试（test_replay.py）在随机事件序列上验证这个等价性。
+    已有测试在随机事件序列上验证这个等价性。
     """
+    if new_event.is_correction:
+        raise ValueError(
+            "更正事件不能走增量更新 —— 它修改的是过去某条事件的判定，"
+            "必须用 replay() 全量重算"
+        )
+    if new_event.is_test:
+        raise ValueError(
+            "测试事件不计入进度，不该走进度更新路径"
+        )
+
     if current is None:
         state = apply_answer(initial_box(), new_event.is_correct, new_event.answered_at)
         return ProgressSnapshot(

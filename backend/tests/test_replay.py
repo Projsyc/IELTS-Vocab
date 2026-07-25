@@ -343,3 +343,175 @@ def test_snapshot_is_immutable():
     assert snap is not None
     with pytest.raises((AttributeError, TypeError)):
         snap.box = 99  # type: ignore[misc]
+
+
+# ─────────────────────────────────────────────────────────────
+# ⭐ 测试事件：回放时跳过（ADR-013）
+# ─────────────────────────────────────────────────────────────
+
+def test_test_events_are_skipped():
+    """⭐ 测试模式的答题不进 Leitner 循环 —— "错了就是错了"。"""
+    events = [
+        rec(1, True, 0),
+        AnswerRecord(2, False, T0 + timedelta(hours=24), is_test=True),   # 测试答错
+        rec(3, True, 48),
+    ]
+    snap = replay(events)
+    assert snap is not None
+    # 只有两条真实答题（都对）→ Box 1 → 2 → 3
+    assert snap.box == 3
+    assert snap.correct_count == 2
+    assert snap.wrong_count == 0, "测试答错不该计入"
+
+
+def test_only_test_events_yields_no_progress():
+    """全是测试事件 ⇒ 该词没有学习进度，user_progress 里不该有行。"""
+    events = [
+        AnswerRecord(1, True, T0, is_test=True),
+        AnswerRecord(2, False, T0 + timedelta(hours=1), is_test=True),
+    ]
+    assert replay(events) is None
+
+
+def test_test_event_does_not_affect_last_answered_at():
+    """last_answered_at 只看计入进度的事件。"""
+    events = [
+        rec(1, True, 0),
+        AnswerRecord(2, True, T0 + timedelta(hours=500), is_test=True),
+    ]
+    snap = replay(events)
+    assert snap is not None
+    assert snap.last_answered_at == T0
+
+
+def test_test_events_do_not_break_shuffle_invariance():
+    """加入测试事件后，乱序回放一致性仍然成立。"""
+    events = [
+        rec(1, True, 0),
+        AnswerRecord(2, False, T0 + timedelta(hours=10), is_test=True),
+        rec(3, False, 48),
+        AnswerRecord(4, True, T0 + timedelta(hours=60), is_test=True),
+        rec(5, True, 72),
+    ]
+    expected = replay(events)
+    rng = random.Random(31)
+    for _ in range(100):
+        shuffled = events[:]
+        rng.shuffle(shuffled)
+        assert replay(shuffled) == expected
+
+
+# ─────────────────────────────────────────────────────────────
+# ⭐ 更正事件：把被指向的事件视为答对（ADR-013）
+# ─────────────────────────────────────────────────────────────
+
+def test_correction_flips_target_to_correct():
+    """⭐ "其实我会" —— 追加更正，不改写历史。"""
+    without = replay([rec(1, True, 0), rec(2, False, 48)])
+    assert without is not None and without.box == MIN_BOX
+
+    with_fix = replay([
+        rec(1, True, 0),
+        rec(2, False, 48),
+        AnswerRecord(3, True, T0 + timedelta(hours=50), corrects_event_id=2),
+    ])
+    assert with_fix is not None
+    assert with_fix.box == 3, "更正后应像一直答对：Box 1→2→3"
+    assert with_fix.correct_count == 2
+    assert with_fix.wrong_count == 0
+
+
+def test_correction_does_not_add_an_extra_answer():
+    """更正事件本身不算一次答题 —— 否则会多升一箱。"""
+    snap = replay([
+        rec(1, False, 0),
+        AnswerRecord(2, True, T0 + timedelta(hours=1), corrects_event_id=1),
+    ])
+    assert snap is not None
+    assert snap.correct_count == 1, "只有 1 次答题（被更正为对）"
+    assert snap.wrong_count == 0
+    assert snap.box == 2, "一次答对 → Box 2，不是 3"
+
+
+def test_correction_restores_high_box():
+    """真实场景：Box 5 的词因 typo 掉到 1，更正后恢复。"""
+    events = [rec(i + 1, True, i * 24) for i in range(4)]   # 连对 4 次 → Box 5
+    base = replay(events)
+    assert base is not None and base.box == MAX_BOX
+
+    events.append(rec(99, False, 500))                       # typo → Box 1
+    dropped = replay(events)
+    assert dropped is not None and dropped.box == MIN_BOX
+
+    events.append(AnswerRecord(100, True, T0 + timedelta(hours=501), corrects_event_id=99))
+    fixed = replay(events)
+    assert fixed is not None
+    assert fixed.box == MAX_BOX, "更正后应恢复到 Box 5"
+    assert fixed.wrong_count == 0
+
+
+def test_correction_of_nonexistent_event_is_harmless():
+    """指向不存在的事件（数据脏）不该让回放崩掉。"""
+    snap = replay([
+        rec(1, True, 0),
+        AnswerRecord(2, True, T0 + timedelta(hours=1), corrects_event_id=99999),
+    ])
+    assert snap is not None
+    assert snap.correct_count == 1
+
+
+def test_corrections_do_not_break_shuffle_invariance():
+    """⭐ 加入更正后，乱序回放一致性仍然成立。
+
+    这条很关键：更正的语义是"改判某条事件"，与顺序无关，
+    所以打乱不该影响结果。
+    """
+    events = [
+        rec(1, True, 0),
+        rec(2, False, 48),
+        AnswerRecord(3, True, T0 + timedelta(hours=50), corrects_event_id=2),
+        rec(4, True, 72),
+        rec(5, False, 100),
+    ]
+    expected = replay(events)
+    rng = random.Random(77)
+    for _ in range(100):
+        shuffled = events[:]
+        rng.shuffle(shuffled)
+        assert replay(shuffled) == expected
+
+
+def test_test_and_correction_together():
+    """两类特殊事件混在一起也要正确。"""
+    events = [
+        rec(1, True, 0),
+        AnswerRecord(2, False, T0 + timedelta(hours=5), is_test=True),
+        rec(3, False, 48),
+        AnswerRecord(4, True, T0 + timedelta(hours=50), corrects_event_id=3),
+        AnswerRecord(5, True, T0 + timedelta(hours=60), is_test=True),
+    ]
+    snap = replay(events)
+    assert snap is not None
+    assert snap.correct_count == 2, "两次真实答题，其中一次被更正为对"
+    assert snap.wrong_count == 0
+    assert snap.box == 3
+
+
+# ─────────────────────────────────────────────────────────────
+# 增量更新拒绝特殊事件
+# ─────────────────────────────────────────────────────────────
+
+def test_incremental_rejects_correction():
+    """更正必须走全量 —— 增量表达不了"改判过去某条"的语义。"""
+    with pytest.raises(ValueError, match="更正"):
+        replay_incremental(None, AnswerRecord(1, True, T0, corrects_event_id=99))
+
+
+def test_incremental_rejects_test_event():
+    with pytest.raises(ValueError, match="测试"):
+        replay_incremental(None, AnswerRecord(1, True, T0, is_test=True))
+
+
+def test_record_is_correction_property():
+    assert AnswerRecord(1, True, T0).is_correction is False
+    assert AnswerRecord(1, True, T0, corrects_event_id=5).is_correction is True

@@ -27,6 +27,119 @@
 
 ---
 
+## BUG-010 给事件加了字段，却漏了两处查询 —— 回放静默算错
+
+| | |
+|---|---|
+| **日期** | 2026-07-25 |
+| **严重度** | 🔴 数据错误，且**不报错** |
+| **状态** | ✅ 已修复 |
+
+**现象**
+
+给 `answer_events` 加了 `is_test` / `corrects_event_id` 两列，
+`replay()` 也改好了（跳过测试事件、应用更正）。单测全过。
+但接口测试挂了两条：
+
+```
+test_correct_restores_progress    期望 Box 5，实际 Box 2
+test_test_events_excluded_from_rebuild  期望 Box 2，实际 Box 1
+```
+
+**根因**
+
+模型和纯函数都改了，但**从数据库构造 `AnswerRecord` 的两处查询没改**：
+
+```python
+# app/services/practice.py  rebuild_progress()
+select(AnswerEvent.id, AnswerEvent.is_correct, AnswerEvent.answered_at)   # ← 少两列
+...
+replay([AnswerRecord(eid, ok, at) for eid, ok, at in rows])               # ← is_test 走默认 False
+```
+
+`AnswerRecord` 的新字段有默认值（`is_test=False`、`corrects_event_id=None`），
+所以**不会报错**，只是全部当成普通答题：
+
+- 更正事件被当成"又答对了一次" → Box 1 升到 2，而不是恢复到 5
+- 测试答错被当成真实答错 → 进度被污染
+
+Box 2 这个数字正好印证：4 次对 + 1 次错（Box 1）+ 把更正当成一次对（Box 2）。
+
+**解决方案**
+
+两处查询都补上新字段（`practice.py` 的 `rebuild_progress`、
+`progress.py` 的 `rebuild_all_progress`），并在两处都加注释说明为什么必须查。
+
+**如何避免再犯**
+
+- **给共享的数据结构加字段时，`grep` 一遍所有构造点**：
+  ```bash
+  grep -rn "AnswerRecord(" app/
+  ```
+- ⚠️ **带默认值的新字段是双刃剑**：它让旧代码不报错，但也让"忘了传"变成静默错误。
+  这次正是因为有默认值才没在构造时炸掉。
+- 单测用的是手工构造的 `AnswerRecord`（字段齐全），所以**单测全过**。
+  真正抓到问题的是走数据库的接口测试 —— 说明两层测试都需要。
+
+---
+
+## BUG-009 autogenerate 不知道表里有数据，加非空列的迁移跑不起来
+
+| | |
+|---|---|
+| **日期** | 2026-07-25 |
+| **严重度** | 🟡 迁移会失败（提前发现，未真正踩到） |
+| **状态** | ✅ 已修复 |
+
+**现象**
+
+给 `answer_events` 加 `is_test` 列，autogenerate 生成的是：
+
+```python
+op.add_column('answer_events', sa.Column('is_test', sa.Boolean(), nullable=False))
+```
+
+表里**已有 10 行数据**。给已有行加 NOT NULL 列却不给默认值，PostgreSQL 会直接拒绝。
+
+**根因**
+
+`alembic revision --autogenerate` 对比的是**模型定义与数据库结构**，
+它不知道表里有没有数据。模型里写 `default=False` 是 **Python 层默认值**
+（插入新行时由 SQLAlchemy 填），不是数据库的 `DEFAULT` 约束，
+所以 autogenerate 不会生成 `server_default`。
+
+同一个迁移里还有两处 autogenerate 的固有缺陷：
+
+| 问题 | 后果 |
+|------|------|
+| `sa.Enum(...)` 未加 `create_type=False` | 重复 CREATE TYPE → DuplicateObjectError（同 BUG-004） |
+| `op.drop_constraint(None, ...)` | 约束名传 None，downgrade 直接挂 |
+
+**解决方案**
+
+手工改三处：
+
+```python
+# 1. 复用已存在的 ENUM
+practice_mode = postgresql.ENUM(..., create_type=False)
+
+# 2. 给已有行一个默认值
+op.add_column('answer_events',
+    sa.Column('is_test', sa.Boolean(), nullable=False, server_default=sa.false()))
+
+# 3. 外键显式命名，downgrade 才能引用
+op.create_foreign_key("fk_answer_events_corrects_event_id", ...)
+```
+
+**如何避免再犯**
+
+- **加非空列前先看表里有没有数据**：`select count(*) from 表名`
+- 有数据就必须给 `server_default`（或分三步：加可空列 → 回填 → 改非空）
+- 这次的往返测试特意在**有数据的库**上跑，验证了 10 行数据全程没丢
+- 再次印证 BUG-004 的教训：**autogenerate 的产物是草稿，不是成品**
+
+---
+
 ## BUG-008 async engine 与事件循环 —— 同一根因踩了三次
 
 | | |

@@ -148,10 +148,10 @@ backend/.venv/bin/pip install -r backend/requirements.txt   # 后端依赖
 | 音标 | **99.2%**（dictionaryapi.dev 真 IPA + 清洗版 ECDICT 兜底） |
 | 词性 | **99.6%**（从释义前缀解析） |
 | 话题 | **100%**（LLM 打标，21 类，已人工验收） |
-| 数据库 | 5 表 + 7 索引，迁移往返已验证 |
+| 数据库 | 7 表，迁移往返已验证 |
 | 算法 | Leitner + 回放 + 听写判定 + 干扰项生成（全纯函数） |
-| 接口 | 认证 / 词库 / 练习 / 进度，共 11 个 |
-| 测试 | **443 个**（含 doctest） |
+| 接口 | 认证 / 词库 / 练习 / 进度 / 测试，共 18 个 |
+| 测试 | **491 个**（含 doctest） |
 
 ### 词库方案（已定案）
 
@@ -168,36 +168,51 @@ backend/.venv/bin/pip install -r backend/requirements.txt   # 后端依赖
 2. **`.` 在两个数据源里含义相反** —— ECDICT 里是**次重音**（→ `ˌ`），API 的 IPA 里是**音节分隔**（→ 删掉）。别把 `clean_ecdict_phonetic` 和 `normalize_api_phonetic` "统一"了，已有测试钉住。
 3. **干扰项必须同时按 `topic` + `part_of_speech` 过滤** —— 释义自带词性前缀（`n.` / `vt.`），只按话题过滤会让用户靠数前缀排除答案。见 [docs/03 §5](./docs/03-data-model.md)。
 
-## ✅ M2 完成 —— 下一步是 M3 前端
+## ✅ M2 + M2.5 完成 —— 下一步是 M3 前端
 
 | 模块 | 内容 | 测试 |
 |------|------|------|
 | `services/leitner.py` | Leitner 状态机，全纯函数 | 45 |
-| `services/replay.py` | 事件回放（乱序一致、增量==全量） | 23 |
+| `services/replay.py` | 事件回放（乱序一致 / 跳过测试 / 应用更正） | 36 |
 | `services/dictation.py` | 听写判定 + Levenshtein 错误高亮 | 50 |
 | `services/distractor.py` | 干扰项生成（降级链 + 防前缀泄露） | 36 |
 | `services/practice.py` | 挑词、出题、答题落库 | — |
 | `services/progress.py` | 统计、错题本、从事件重建 | — |
+| `services/testing.py` | 测试模式、判我对、星标 | — |
 | `core/security.py` | bcrypt 哈希 + JWT | 30 |
-| `routers/` | 认证 / 词库 / 练习 / 进度，**11 个接口** | 85 |
+| `routers/` | 认证 / 词库 / 练习 / 进度 / 测试，**18 个接口** | 120 |
 
-**ADR-002 的承诺已端到端验证**：删掉整个 `user_progress` → 从 `answer_events`
-重建 → 结果完全一致（10 条事件，4ms）。
+## ⭐ 三条必须守住的不变式（都有测试固化）
 
-## ⭐ 实现中修正的三处设计
+1. **`user_progress` 能从 `answer_events` 完整重算** —— 删表重建结果一致
+2. **测试模式的答题绝不影响 Leitner 进度** —— 测试全错，进度纹丝不动
+3. **星标不在 `user_progress` 里** —— 它不是事件的推论，重建不该抹掉它
 
-1. **阅读模式回传选中文本，不是选项 index** —— 题目是无状态生成的，
-   服务端不保存"第几个对"，回传 index 无从验证。文本方案完全无状态且不泄露。
-2. **干扰项一律剥掉词性前缀** —— 释义自带 `n.` / `vt.` 前缀，
-   降级到混词性时用户数前缀就能排除答案。
-3. **查询参数也用 camelCase** —— body 已是驼峰，前端不该记"body 驼峰、query 下划线"。
+## 三种玩法
 
-## ⚠️ 前端必须注意的两点
+| | 选词 | 错了会重现 | 影响进度 |
+|---|---|---|---|
+| 每日任务 | 系统挑 | ✅ | ✅ |
+| 自由练习 | 自选话题/数量 | ✅ | ✅ |
+| **测试模式** | 自选范围 | ❌ | ❌ 只记录 |
 
-- 调 `/api/progress/summary` **必须带 `tzOffsetMinutes`**
-  （`-new Date().getTimezoneOffset()`），否则东八区用户早上 8 点前的学习
-  会被记到前一天，连续天数也会断错
-- 阅读模式提交答案回传**选中选项的文本**，不是 index
+## ⭐ 实现中修正的四处设计
+
+1. **阅读模式回传选中文本，不是选项 index** —— 题目无状态生成，index 无从验证
+2. **干扰项一律剥掉词性前缀** —— 否则用户数 `n.`/`vt.` 就能排除答案
+3. **查询参数也用 camelCase** —— 前端不该记"body 驼峰、query 下划线"
+4. **"判我对"是追加更正事件，不改写历史** —— 事件表只 INSERT（ADR-002）
+
+## ⚠️ 前端必须注意的三点
+
+- 调 `/api/progress/summary` **必须带 `tzOffsetMinutes`**（`-new Date().getTimezoneOffset()`）
+- 阅读模式提交**选中选项的文本**，不是 index
+- 测试模式答题要带 `testSessionId`，且响应里 `progress` 为 `null`
+
+## ⚠️ 给事件加字段时
+
+`AnswerRecord` 的新字段**都有默认值**，漏传不报错但会静默算错（BUG-010）。
+加字段后必须 `grep -rn "AnswerRecord(" app/` 检查所有构造点。
 
 ## ⚠️ async engine 与事件循环（这个坑踩了三次）
 
