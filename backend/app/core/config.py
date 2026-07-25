@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     # —— 音频 ——
     AUDIO_DIR: str = "static/audio"
 
+    # —— LLM（话题打标用，OpenAI 兼容接口）——
+    # 换供应商只改这三项，不用改代码。密钥写在 .env，不进 git。
+    LLM_BASE_URL: str = "https://api.deepseek.com"
+    LLM_API_KEY: str = ""
+    LLM_MODEL: str = "deepseek-v4-flash"
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
