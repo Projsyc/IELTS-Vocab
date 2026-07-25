@@ -22,6 +22,70 @@
 
 ---
 
+## 2026-07-25 (3) 数据库建表完成，迁移往返已验证
+
+**做了什么**
+
+- **Docker PostgreSQL 环境**：`docker-compose.yml`（PostgreSQL 17-alpine，含健康检查 + 数据卷）
+  - `scripts/init-db.sql` 首次初始化建 pgcrypto 扩展
+- **后端分层结构**：`app/{core,models,schemas,routers,services,scripts}` + `tests/`
+  - `core/config.py` —— pydantic-settings 读 `.env`，配置集中不散落
+  - `core/database.py` —— async engine + sessionmaker + `get_db()` 依赖
+- **SQLAlchemy 模型**（5 张表，15 列的 `words` 是最大的一张）
+  - `user_progress` 主键是三元组 `(user_id, word_id, mode)`
+  - `answer_events` 主键用 BIGINT 自增（事件量大，比 UUID 索引紧凑）
+  - 文件头写死了 ADR-002 的三条铁律，防止后人无意破坏
+- **Alembic**：async 模板 + 从 `app.core.config` 读连接串（密码不进 git）
+- **首个迁移** `5cbb15f13ff0` —— 5 表 + 7 索引 + 1 ENUM + 1 CHECK
+- **`tests/test_schema.py`** —— 7 个测试锁住结构性不变式，全部通过
+
+**踩了 4 个坑**（详见 [07-bug-log.md](./07-bug-log.md)）
+
+| # | 问题 | 严重度 |
+|---|------|--------|
+| BUG-002 | Docker Desktop 起不来：`Docker.raw` 属主是 root | 🔴 |
+| BUG-003 | SQLAlchemy async 缺 `greenlet`（不是硬依赖） | 🔴 |
+| BUG-004 | **Alembic downgrade 后 ENUM 残留，导致无法重新 upgrade** | 🔴 |
+| BUG-005 | pytest 里模块级 async engine 跨事件循环报 "Event loop is closed" | 🟡 |
+
+**其中 BUG-004 最值得记住** —— 如果我只测了 `upgrade` 就交差，这个"迁移不可逆"的问题会
+一直潜伏到某天需要回滚时才爆。**教训：每个迁移都要测 `upgrade → downgrade → upgrade` 往返。**
+
+**一个环境上的意外**
+
+开发中途 5432 端口被 **Postgres.app** 占了（用户修 Docker 时装的备用方案），导致
+`localhost:5432` 连到它而不是容器，报 `role "ielts" does not exist`。
+`pg_isready` 健康检查不做认证所以没拦住。已停掉 Postgres.app，并在 CLAUDE.md 记了排查方法。
+
+**验证结果**
+
+```console
+$ alembic upgrade head && alembic downgrade base && alembic upgrade head
+✅ 三轮全部成功，残留 ENUM: 0
+
+$ pytest tests/ -v
+✅ 7 passed in 0.28s
+```
+
+**新增命令**
+
+```bash
+pnpm db:up / db:down / db:reset / db:migrate / db:shell
+pnpm test:backend
+```
+
+**下次从哪继续**
+
+→ `backend/app/scripts/seed_words.py`，M1 剩下的两个脚本之一。
+
+关键约束（来自 [09 调研](./09-wordlist-research.md)）：
+1. **必须可断点续跑** —— 逐词调 dictionaryapi.dev 约 75 分钟，中断了不能从头来
+2. 限速 + 失败重试，别骚扰免费服务
+3. 音频存 `backend/static/audio/`，已在 `.gitignore`
+4. 无音频的 24% 用 edge-tts 补（需 `pip install edge-tts`，还没加进 requirements）
+
+---
+
 ## 2026-07-25 (2) M1 词库数据源调研完成 —— 最大风险解除
 
 **做了什么**

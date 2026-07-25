@@ -6,7 +6,13 @@
   "scripts": {
     "dev": "pnpm -r --parallel run dev",
     "dev:frontend": "pnpm -F @ielts/frontend dev",
-    "dev:backend": "cd backend && uvicorn main:app --reload",
+    "dev:backend": "cd backend && .venv/bin/uvicorn main:app --reload",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
+    "db:reset": "docker compose down -v && docker compose up -d",
+    "db:migrate": "cd backend && .venv/bin/alembic upgrade head",
+    "db:shell": "docker exec -it ielts-postgres psql -U ielts -d ielts_vocab",
+    "test:backend": "cd backend && .venv/bin/python -m pytest tests/ -v",
     "build": "pnpm -r run build",
     "lint": "pnpm -r run lint",
     "clean": "pnpm -r run clean"

@@ -35,7 +35,12 @@ v3.0  多端（小程序/安卓）  ░░░░░░░░░░░░ 未开�
 
 ### M1 数据地基
 
-- [ ] Alembic 初始化 + 建表（5 张表，见 [03-data-model](./03-data-model.md)）
+- [x] **Docker PostgreSQL 环境** —— `docker-compose.yml`，PostgreSQL 17-alpine
+- [x] **Alembic 初始化 + 建表**（5 张表 + 7 个索引）
+  - [x] 后端分层结构 `app/{core,models,schemas,routers,services,scripts}`
+  - [x] SQLAlchemy 模型（含三元组主键、CHECK 约束、ENUM）
+  - [x] 首个迁移 `5cbb15f13ff0`，**往返测试通过**（upgrade → downgrade → upgrade）
+  - [x] `tests/test_schema.py` 锁住结构性不变式（7 个测试）
 - [x] **词库数据源调研** → 见 [09-wordlist-research](./09-wordlist-research.md)
   - [x] 确认 ECDICT（MIT）`tag` 含 `ielts` 的 5,040 词可用
   - [x] 实测字段完整度、音频/音标覆盖率、许可状况
@@ -49,7 +54,7 @@ v3.0  多端（小程序/安卓）  ░░░░░░░░░░░░ 未开�
   - [ ] 抽样人工校验标签质量
 
 > ~~**M1 是最容易低估的阶段。** 没有干净的词库数据，后面全是空转。~~
-> **调研已完成，最大风险解除。** 剩下的是工程实现。
+> **调研 + 建表已完成，最大风险解除。** 剩下的是两个脚本。
 
 ### M2 后端核心
 

@@ -31,12 +31,25 @@
 
 ```
 IELTS-Vocab/
+├── docker-compose.yml  # PostgreSQL 17 容器
+├── scripts/init-db.sql #   容器首次初始化（建 pgcrypto 扩展）
 ├── apps/frontend/      # React 前端（@ielts/frontend）
 ├── apps/mobile/        # Android（v3，空）
 ├── backend/            # FastAPI（Python，不在 pnpm workspace）
-│   └── .venv/          #   用 /opt/homebrew/bin/python3.13 建的
+│   ├── .venv/          #   用 /opt/homebrew/bin/python3.13 建的
+│   ├── .env            #   本地配置（不进 git，从 .env.example 复制）
+│   ├── alembic/        #   数据库迁移
+│   ├── app/
+│   │   ├── core/       #     config.py（配置）/ database.py（连接与 Session）
+│   │   ├── models/     #     SQLAlchemy ORM（5 张表）
+│   │   ├── schemas/    #     Pydantic 请求/响应模型（待写）
+│   │   ├── routers/    #     API 路由（待写）
+│   │   ├── services/   #     业务逻辑（待写）
+│   │   └── scripts/    #     seed / 打标脚本（待写）
+│   ├── static/audio/   #   词库音频（seed 生成，不进 git）
+│   └── tests/          #   test_schema.py：锁住结构性不变式
 ├── packages/shared/    # 前后端共享 TS 类型（@ielts/shared）
-├── docs/               # 项目文档（8 篇）
+├── docs/               # 项目文档（9 篇）
 └── learning-docs/      # 概念扫盲笔记（写给初学者）
 ```
 
@@ -62,12 +75,36 @@ answer_events（只追加，事实来源）  ──回放──>  user_progress�
 pnpm install                # 前端依赖
 pnpm dev:frontend           # 前端 :5173
 pnpm dev:backend            # 后端 :8000
-pnpm build                  # 构建全部
-pnpm lint                   # lint 全部
+
+# —— 数据库（Docker）——
+pnpm db:up                  # 起 PostgreSQL 容器
+pnpm db:down                # 停容器（保留数据）
+pnpm db:reset               # ⚠️ 删数据卷重建
+pnpm db:migrate             # alembic upgrade head
+pnpm db:shell               # 进 psql
+
+pnpm test:backend           # 后端测试（需数据库在跑）
+pnpm build / pnpm lint      # 构建 / lint 全部
 
 backend/.venv/bin/pip install -r backend/requirements.txt   # 后端依赖
-backend/.venv/bin/python -c "import main"                   # 验证后端能加载
 ```
+
+⚠️ **端口 5432 冲突**：装过 Postgres.app 的话它会抢 5432，导致连错库报
+`role "ielts" does not exist`。停它：
+
+```bash
+/Applications/Postgres.app/Contents/Versions/17/bin/pg_ctl \
+  -D "$HOME/Library/Application Support/Postgres/var-17" stop
+```
+
+## 数据库开发要点
+
+- 改模型后生成迁移：`cd backend && .venv/bin/alembic revision --autogenerate -m "说明"`
+- **autogenerate 的产物是草稿不是成品** —— 提交前必须读一遍
+- ⚠️ **每个迁移都要测往返**：`upgrade → downgrade → upgrade`。只测 upgrade
+  会漏掉 ENUM 残留这类问题（已踩，见 BUG-004）
+- 新模型必须在 `app/models/__init__.py` 里 import，否则 autogenerate 会生成"删表"迁移
+- 结构性不变式（三元组主键 / CHECK 约束 / 索引列序）已被 `backend/tests/test_schema.py` 锁住
 
 ## 当前状态
 
@@ -87,7 +124,7 @@ backend/.venv/bin/python -c "import main"                   # 验证后端能加
 ⚠️ **ECDICT 音标不是标准 IPA**（简化记音 + 混入西里尔 `ә`），规则转换不可行 —— 已实测 0/8 一致。所以音标改从 API 取。
 
 **下一步（M1 剩余）**：
-1. PostgreSQL + Alembic 建表
+1. ~~PostgreSQL + Alembic 建表~~ ✅ 已完成（5 表 + 7 索引，迁移往返已验证）
 2. `scripts/seed_words.py` —— **必须可断点续跑**（调 API 约 75 分钟）
 3. `scripts/tag_topics.py` —— LLM 打标 + 抽样校验
 
